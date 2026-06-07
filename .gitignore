@@ -1,0 +1,12 @@
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+*~
+
+# 取り込み用の問題データ（誤コミット防止：問題は端末内のみ）
+*_問題集.csv
+*_章別チェックリスト.csv
+*_Gemini解説.md
+*_学習データ.md
+*.bak
