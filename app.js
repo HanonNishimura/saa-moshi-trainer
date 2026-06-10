@@ -533,7 +533,8 @@ function decorateGlossary() {
         seen[term] = true; used = true;
         frag.appendChild(document.createTextNode(s.slice(last, m.index)));
         var span = document.createElement('span');
-        span.className = 'gloss'; span.setAttribute('data-act', 'gloss'); span.setAttribute('data-term', term);
+        var ty = (GLOSSARY[term] && GLOSSARY[term].t) || 'it';
+        span.className = 'gloss ' + ty; span.setAttribute('data-act', 'gloss'); span.setAttribute('data-term', term);
         span.textContent = term;
         frag.appendChild(span);
         last = m.index + term.length;
@@ -547,9 +548,10 @@ function showGloss(term) {
   var old = document.getElementById('glossSheet'); if (old) old.remove();
   var sheet = document.createElement('div');
   sheet.id = 'glossSheet'; sheet.className = 'gloss-sheet';
+  var tlabel = e.t === 'aws' ? '<span class="pill hi">AWS用語</span>' : '<span class="pill">IT用語</span>';
   sheet.innerHTML = '<div class="gloss-card">' +
     '<div class="row"><b class="grow" style="font-size:16px">' + esc(term) + '</b>' +
-    (e.c ? '<span class="pill g">章 ' + esc(e.c) + '</span>' : '') +
+    tlabel + (e.c ? '<span class="pill g">章 ' + esc(e.c) + '</span>' : '') +
     '<button class="btn ghost sm" data-act="glossClose">✕</button></div>' +
     '<div style="margin-top:10px;line-height:1.8;font-size:14px">' + esc(e.d) + '</div></div>';
   sheet.addEventListener('click', function (ev) { if (ev.target === sheet) sheet.remove(); });

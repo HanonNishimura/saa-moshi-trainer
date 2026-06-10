@@ -139,8 +139,10 @@ label.rowcheck input{width:auto;min-height:auto;transform:scale(1.3);margin:0 4p
 .ngc{color:#fca5a5;font-weight:600}
 /* 解説エディタ */
 textarea.expl-edit{width:100%;min-height:180px;background:var(--bg2);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:14px;line-height:1.6;margin-top:8px;resize:vertical;font-family:inherit}
-/* 用語リンク（クリックで意味表示） */
-.gloss{color:#7dd3fc;border-bottom:1px dashed #38bdf8;cursor:pointer;padding-bottom:1px}
+/* 用語リンク（クリックで意味表示）。AWS=黄／IT=青 */
+.gloss{cursor:pointer;border-bottom:1px dashed currentColor;padding-bottom:1px}
+.gloss.aws{color:#fbbf24}   /* AWS/SAA固有 = 黄 */
+.gloss.it{color:#7dd3fc}    /* 一般IT = 青 */
 .gloss:active{background:#0b2236}
 /* 用語の意味シート */
 .gloss-sheet{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;justify-content:center}
