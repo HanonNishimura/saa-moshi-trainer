@@ -3,12 +3,13 @@
  * 問題データはユーザーがインポートして端末内(localStorage)に保存されるため、
  * このSWはネットワークへ問題を一切送らない。
  */
-const CACHE = 'saa-moshi-v7';
+const CACHE = 'saa-moshi-v8';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './glossary.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

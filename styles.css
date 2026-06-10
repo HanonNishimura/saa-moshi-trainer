@@ -139,6 +139,13 @@ label.rowcheck input{width:auto;min-height:auto;transform:scale(1.3);margin:0 4p
 .ngc{color:#fca5a5;font-weight:600}
 /* 解説エディタ */
 textarea.expl-edit{width:100%;min-height:180px;background:var(--bg2);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:14px;line-height:1.6;margin-top:8px;resize:vertical;font-family:inherit}
+/* 用語リンク（クリックで意味表示） */
+.gloss{color:#7dd3fc;border-bottom:1px dashed #38bdf8;cursor:pointer;padding-bottom:1px}
+.gloss:active{background:#0b2236}
+/* 用語の意味シート */
+.gloss-sheet{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;justify-content:center}
+.gloss-sheet .gloss-card{width:100%;max-width:720px;background:var(--card);border:1px solid var(--line);border-bottom:0;border-radius:16px 16px 0 0;padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom));box-shadow:0 -8px 30px rgba(0,0,0,.5);animation:sheetup .18s ease-out}
+@keyframes sheetup{from{transform:translateY(30px);opacity:.4}to{transform:translateY(0);opacity:1}}
 /* 正答率の推移チャート */
 .trend{display:flex;align-items:flex-end;gap:4px;height:110px;padding-top:14px;border-bottom:1px solid var(--line);position:relative}
 .trend .tb{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%;position:relative}

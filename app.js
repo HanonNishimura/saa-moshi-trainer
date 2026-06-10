@@ -486,16 +486,74 @@ function show(view, arg) {
   state.view = view;
   if (['home', 'import', 'exam', 'review', 'stats'].indexOf(view) >= 0) setNav(view);
   window.scrollTo(0, 0);
-  if (view === 'home') return renderHome();
-  if (view === 'import') return renderImport();
-  if (view === 'exam') return renderExamHub();
-  if (view === 'review') return renderReviewHub();
-  if (view === 'stats') return renderStatsHub();
-  if (view === 'examSetup') return renderExamSetup(arg);
-  if (view === 'examRun') return renderExamRun();
-  if (view === 'examResult') return renderExamResult(arg);
-  if (view === 'reviewRun') return renderReviewRun(arg);
-  if (view === 'statsDeck') return renderStatsDeck(arg);
+  if (view === 'home') renderHome();
+  else if (view === 'import') renderImport();
+  else if (view === 'exam') renderExamHub();
+  else if (view === 'review') renderReviewHub();
+  else if (view === 'stats') renderStatsHub();
+  else if (view === 'examSetup') renderExamSetup(arg);
+  else if (view === 'examRun') renderExamRun();
+  else if (view === 'examResult') renderExamResult(arg);
+  else if (view === 'reviewRun') renderReviewRun(arg);
+  else if (view === 'statsDeck') renderStatsDeck(arg);
+  decorateGlossary();
+}
+
+/* ============================ 用語集（クリックで意味表示） ============================ */
+var _glossRe;
+function glossRe() {
+  if (_glossRe !== undefined) return _glossRe;
+  if (!window.GLOSSARY) { _glossRe = false; return false; }
+  var terms = Object.keys(GLOSSARY).filter(function (t) { return t.length >= 2; });
+  terms.sort(function (a, b) { return b.length - a.length; }); // 長い語を優先
+  var esc = terms.map(function (t) { return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); });
+  try { _glossRe = new RegExp(esc.join('|'), 'g'); } catch (e) { _glossRe = false; }
+  return _glossRe;
+}
+/* .expl 内のテキストで、用語の初出をクリック可能にする */
+function decorateGlossary() {
+  var re = glossRe(); if (!re) return;
+  var boxes = app.querySelectorAll('.expl');
+  for (var b = 0; b < boxes.length; b++) {
+    var box = boxes[b], seen = {};
+    var walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, null, false);
+    var nodes = [], node;
+    while ((node = walker.nextNode())) nodes.push(node);
+    for (var i = 0; i < nodes.length; i++) {
+      var nd = nodes[i];
+      if (nd.parentNode && nd.parentNode.closest && nd.parentNode.closest('.gloss')) continue;
+      var s = nd.nodeValue;
+      re.lastIndex = 0;
+      if (!re.test(s)) continue;
+      re.lastIndex = 0;
+      var frag = document.createDocumentFragment(), last = 0, m, used = false;
+      while ((m = re.exec(s))) {
+        var term = m[0];
+        if (seen[term]) continue;          // 各ボックスで初出のみリンク化
+        seen[term] = true; used = true;
+        frag.appendChild(document.createTextNode(s.slice(last, m.index)));
+        var span = document.createElement('span');
+        span.className = 'gloss'; span.setAttribute('data-act', 'gloss'); span.setAttribute('data-term', term);
+        span.textContent = term;
+        frag.appendChild(span);
+        last = m.index + term.length;
+      }
+      if (used) { frag.appendChild(document.createTextNode(s.slice(last))); nd.parentNode.replaceChild(frag, nd); }
+    }
+  }
+}
+function showGloss(term) {
+  var e = window.GLOSSARY && GLOSSARY[term]; if (!e) return;
+  var old = document.getElementById('glossSheet'); if (old) old.remove();
+  var sheet = document.createElement('div');
+  sheet.id = 'glossSheet'; sheet.className = 'gloss-sheet';
+  sheet.innerHTML = '<div class="gloss-card">' +
+    '<div class="row"><b class="grow" style="font-size:16px">' + esc(term) + '</b>' +
+    (e.c ? '<span class="pill g">章 ' + esc(e.c) + '</span>' : '') +
+    '<button class="btn ghost sm" data-act="glossClose">✕</button></div>' +
+    '<div style="margin-top:10px;line-height:1.8;font-size:14px">' + esc(e.d) + '</div></div>';
+  sheet.addEventListener('click', function (ev) { if (ev.target === sheet) sheet.remove(); });
+  document.body.appendChild(sheet);
 }
 
 /* ---------- ホーム ---------- */
@@ -594,17 +652,20 @@ function handleFiles(fileList) {
     return 0;
   }
   files.sort(function (a, b) { return rank(a) - rank(b); });
-  var pending = files.length, log = [];
-  files.forEach(function (f) {
-    var rd = new FileReader();
+  var log = [];
+  // 順番に1つずつ処理（問題集を先に保存してから解説/章別を適用する。並列だと順序が崩れるため）
+  function readNext(i) {
+    if (i >= files.length) { toast(log.join(' / ')); show('home'); return; }
+    var f = files[i], rd = new FileReader();
     rd.onload = function () {
       try { log.push(importOne(f.name, String(rd.result))); }
       catch (e) { log.push('⚠ ' + f.name + '：' + (e.message || '読み込み失敗')); }
-      if (--pending === 0) { toast(log.join(' / ')); show('home'); }
+      readNext(i + 1);
     };
-    rd.onerror = function () { log.push('⚠ ' + f.name + '：読込エラー'); if (--pending === 0) { toast(log.join(' / ')); show('home'); } };
+    rd.onerror = function () { log.push('⚠ ' + f.name + '：読込エラー'); readNext(i + 1); };
     rd.readAsText(f, 'utf-8');
-  });
+  }
+  readNext(0);
 }
 function importOne(fname, text) {
   var name = deckNameFromFile(fname);
@@ -839,6 +900,7 @@ function renderExamRun() {
     '<button class="btn ghost block danger sm" data-act="quitExam">試験を中断</button>';
   startTimer();
   saveActiveExam();
+  decorateGlossary();
 }
 function navGridHtml() {
   var ex = state.exam, h = '';
@@ -1227,6 +1289,8 @@ var handlers = {
   goImport: function () { show('import'); },
   home: function () { show('home'); },
   back: function (t) { show(t.dataset.to); },
+  gloss: function (t) { showGloss(t.dataset.term); },
+  glossClose: function () { var s = document.getElementById('glossSheet'); if (s) s.remove(); },
   startExam: function (t) { show('examSetup', t.dataset.id); },
   beginExam: function () { beginExam(); },
   openReview: function (t) { show('reviewRun', { deckId: t.dataset.id }); },
