@@ -406,6 +406,16 @@ function applyChecklist(deck, rows) {
 }
 
 /* ---------- 集計 ---------- */
+/* 練習モードの問題別成績（試験とは別管理。苦手判定には合算する） */
+var PStats = {
+  all: function (deckId) { return LS.get('saa.pstats.' + deckId, {}); },
+  count: function (deckId) { return Object.keys(PStats.all(deckId)).length; },
+  record: function (deckId, num, ok) {
+    var m = PStats.all(deckId), s = m[num] || (m[num] = { seen: 0, correct: 0 });
+    s.seen++; if (ok) s.correct++;
+    LS.set('saa.pstats.' + deckId, m);
+  }
+};
 function qStats(deckId) {
   var at = Store.attempts(deckId), m = {};
   at.forEach(function (a) {
@@ -413,6 +423,11 @@ function qStats(deckId) {
       var s = m[it.num] || (m[it.num] = { seen: 0, correct: 0, last: null });
       s.seen++; if (it.isCorrect) s.correct++; s.last = it.isCorrect;
     });
+  });
+  var p = PStats.all(deckId);
+  Object.keys(p).forEach(function (num) {
+    var s = m[num] || (m[num] = { seen: 0, correct: 0, last: null });
+    s.seen += p[num].seen; s.correct += p[num].correct;
   });
   return m;
 }
@@ -425,6 +440,16 @@ function genreStats(deckId) {
       s.seen++; if (it.isCorrect) s.correct++;
     });
   });
+  var deck = Store.getDeck(deckId), p = PStats.all(deckId);
+  if (deck) {
+    var byNum = {}; deck.questions.forEach(function (q) { byNum[q.num] = q; });
+    Object.keys(p).forEach(function (num) {
+      var q = byNum[num]; if (!q) return;
+      var k = q.genreCode || '?';
+      var s = m[k] || (m[k] = { code: k, name: q.genre || k, seen: 0, correct: 0 });
+      s.seen += p[num].seen; s.correct += p[num].correct;
+    });
+  }
   return m;
 }
 function deckGenres(deck) {
@@ -482,9 +507,14 @@ function setNav(view) {
     btns[i].classList.toggle('active', btns[i].getAttribute('data-nav') === view);
   }
 }
+var NAV_MAP = {
+  home: 'home', import: 'import', exam: 'exam', examSetup: 'exam', examRun: 'exam', examResult: 'exam',
+  practice: 'practice', practiceSetup: 'practice', practiceRun: 'practice',
+  review: 'review', reviewRun: 'review', stats: 'stats', statsDeck: 'stats'
+};
 function show(view, arg) {
   state.view = view;
-  if (['home', 'import', 'exam', 'review', 'stats'].indexOf(view) >= 0) setNav(view);
+  if (NAV_MAP[view]) setNav(NAV_MAP[view]);
   window.scrollTo(0, 0);
   if (view === 'home') renderHome();
   else if (view === 'import') renderImport();
@@ -496,6 +526,9 @@ function show(view, arg) {
   else if (view === 'examResult') renderExamResult(arg);
   else if (view === 'reviewRun') renderReviewRun(arg);
   else if (view === 'statsDeck') renderStatsDeck(arg);
+  else if (view === 'practice') renderPracticeSetup();
+  else if (view === 'practiceSetup') renderPracticeSetup(arg);
+  else if (view === 'practiceRun') renderPracticeRun();
   decorateGlossary();
 }
 
@@ -746,6 +779,130 @@ function renderExamHub() {
 }
 function renderReviewHub() { app.innerHTML = pickDeckCard('📖 解説モード', 'openReview'); }
 function renderStatsHub() { app.innerHTML = pickDeckCard('📊 弱点分析', 'openStats'); }
+
+/* ============================ 練習モード ============================ */
+function renderPracticeSetup(deckId) {
+  var decks = Store.decks();
+  if (!decks.length) { app.innerHTML = pickDeckCard('🎯 練習モード', 'startPractice'); return; }
+  if (!deckId || !Store.getDeck(deckId)) deckId = LS.get('saa.lastDeck', decks[0].id);
+  if (!Store.getDeck(deckId)) deckId = decks[0].id;
+  var d = Store.getDeck(deckId);
+  state.pSetup = deckId;
+  var genres = deckGenres(d);
+  var deckOpts = decks.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === deckId ? ' selected' : '') + '>' + esc(x.name) + '（' + x.count + '問）</option>'; }).join('');
+  var gopts = genres.map(function (g) { return '<option value="' + esc(g.code) + '">' + esc(g.name) + '（' + g.count + '）</option>'; }).join('');
+  app.innerHTML =
+    '<div class="card"><h3>🎯 練習モード</h3>' +
+    '<p class="small muted">1問ずつ答え合わせ＆解説。気軽に反復できます（成績は弱点分析に反映、受験履歴には残りません）。</p>' +
+    '<label class="fld"><span class="lab">① どの模試</span><select id="pDeck">' + deckOpts + '</select></label>' +
+    '<label class="fld"><span class="lab">② 出題範囲</span><select id="pRange">' +
+    '<option value="all">ランダム（全問から）</option>' +
+    '<option value="genre">ジャンル（章）を指定</option>' +
+    '<option value="weak">苦手（正答率60%未満・未挑戦）</option>' +
+    '<option value="bm">★ ブックマークのみ</option>' +
+    '</select></label>' +
+    '<label class="fld" id="pGenreWrap" style="display:none"><span class="lab">ジャンル</span><select id="pGenre">' + gopts + '</select></label>' +
+    '<label class="fld"><span class="lab">③ 問題数</span><select id="pCount">' +
+    '<option value="10">10問</option><option value="20">20問</option><option value="0">全部</option>' +
+    '</select></label>' +
+    '<div id="pInfo" class="small muted" style="margin:2px 0 10px"></div>' +
+    '<button class="btn primary block" data-act="beginPractice">▶ 練習を始める</button></div>';
+  $('#pDeck').addEventListener('change', function () { show('practiceSetup', this.value); });
+  $('#pRange').addEventListener('change', function () { $('#pGenreWrap').style.display = this.value === 'genre' ? 'block' : 'none'; upd(); });
+  function pool() {
+    var d2 = Store.getDeck(deckId), arr = d2.questions.slice(), range = $('#pRange').value;
+    if (range === 'genre') { var g = $('#pGenre').value; if (g) arr = arr.filter(function (q) { return q.genreCode === g; }); }
+    else if (range === 'weak') { var qs = qStats(deckId); arr = arr.filter(function (q) { var s = qs[q.num]; return !s || s.correct / s.seen < 0.6; }); }
+    else if (range === 'bm') { var bm = BM.list(deckId); arr = arr.filter(function (q) { return bm.indexOf(q.num) >= 0; }); }
+    return arr;
+  }
+  function upd() { var n = pool().length, c = parseInt($('#pCount').value, 10) || 0; $('#pInfo').textContent = '対象 ' + n + '問' + (c > 0 ? ' → ' + Math.min(c, n) + '問を出題' : ''); }
+  ['#pGenre', '#pCount'].forEach(function (s) { var e = $(s); if (e) e.addEventListener('change', upd); });
+  upd();
+  state._pPool = pool; // beginPractice から使う
+}
+function beginPractice() {
+  var d = Store.getDeck(state.pSetup); if (!d) return;
+  var arr = state._pPool ? state._pPool() : d.questions.slice();
+  if (!arr.length) { toast('対象の問題がありません'); return; }
+  arr = shuffle(arr);
+  var c = parseInt($('#pCount').value, 10) || 0;
+  if (c > 0 && arr.length > c) arr = arr.slice(0, c);
+  LS.set('saa.lastDeck', d.id);
+  state.practice = { deckId: d.id, deckName: d.name, qs: arr, idx: 0, sel: [], revealed: false, seen: 0, correct: 0 };
+  show('practiceRun');
+}
+function renderPracticeRun() {
+  var p = state.practice; if (!p) return show('practice');
+  var q = p.qs[p.idx];
+  var multi = q.correct.length > 1 || /[2２]\s*つ選択|複数選択|該当するもの全て|すべて選択/.test(q.text);
+  var ch = '';
+  if (p.revealed) {
+    ch = choicesView(q, p.sel);
+  } else {
+    q.choices.forEach(function (c, i) {
+      var n = i + 1, on = p.sel.indexOf(n) >= 0;
+      ch += '<button class="choice' + (on ? ' sel' : '') + '" data-act="pPick" data-n="' + n + '"><span class="mk">' + (on ? '✓' : n) + '</span><span>' + esc(c) + '</span></button>';
+    });
+  }
+  var bottom = p.revealed
+    ? (p.idx < p.qs.length - 1 ? '<button class="btn primary grow" data-act="pNext">次の問題 →</button>' : '<button class="btn primary grow" data-act="pNext">結果を見る</button>')
+    : '<button class="btn primary grow" data-act="pReveal" ' + (p.sel.length ? '' : 'disabled') + '>答え合わせ</button>';
+  app.innerHTML =
+    '<div class="card" style="margin-top:6px">' +
+    '<div class="qmeta"><span>🎯 練習 ' + (p.idx + 1) + ' / ' + p.qs.length + '</span><span>正解 ' + p.correct + ' / ' + p.seen + '</span></div>' +
+    '<div class="bar"><i style="width:' + pct(p.idx + (p.revealed ? 1 : 0), p.qs.length) + '%"></i></div>' +
+    '<div class="row wrap" style="margin-top:10px;gap:6px">' +
+    '<span class="pill g">' + esc(q.genre) + '</span>' +
+    '<span class="pill' + (q.importance === '高' ? ' hi' : '') + '">重要度 ' + esc(q.importance) + '</span>' +
+    (multi ? '<span class="pill">複数選択可</span>' : '') +
+    '<span class="grow"></span>' +
+    '<button class="btn ghost sm" data-act="pBm" data-num="' + q.num + '">' + (BM.has(p.deckId, q.num) ? '★' : '☆') + '</button>' +
+    '</div>' +
+    '<div class="qtext">' + esc(q.text) + '</div>' + ch +
+    (p.revealed ? ('<div class="small ' + (p.lastOk ? 'okc' : 'ngc') + '" style="margin-top:6px">' + (p.lastOk ? '正解！ ✓' : '不正解… ✕') + '</div>' + explBlock(q, effExpl(p.deckId, q))) : '') +
+    '</div>' +
+    '<div class="sticky-bottom">' + bottom + '</div>' +
+    '<div class="spacer"></div>' +
+    '<button class="btn ghost block sm" data-act="pQuit">練習をやめる</button>';
+  decorateGlossary();
+}
+function pPick(n) {
+  var p = state.practice, q = p.qs[p.idx];
+  if (p.revealed) return;
+  var multi = q.correct.length > 1 || /[2２]\s*つ選択|複数選択|該当するもの全て|すべて選択/.test(q.text);
+  var pos = p.sel.indexOf(n);
+  if (multi) { if (pos >= 0) p.sel.splice(pos, 1); else p.sel.push(n); }
+  else { p.sel = (pos >= 0) ? [] : [n]; }
+  renderPracticeRun();
+}
+function pReveal() {
+  var p = state.practice, q = p.qs[p.idx];
+  if (!p.sel.length) return;
+  p.revealed = true;
+  p.lastOk = eqSet(p.sel, q.correct);
+  p.seen++; if (p.lastOk) p.correct++;
+  PStats.record(p.deckId, q.num, p.lastOk);
+  renderPracticeRun();
+}
+function pNext() {
+  var p = state.practice;
+  if (p.idx < p.qs.length - 1) { p.idx++; p.sel = []; p.revealed = false; renderPracticeRun(); }
+  else { renderPracticeResult(); }
+}
+function renderPracticeResult() {
+  var p = state.practice;
+  app.innerHTML =
+    '<div class="card" style="text-align:center">' +
+    '<div class="small muted">🎯 練習おつかれさま（' + esc(p.deckName) + '）</div>' +
+    '<div class="bigpct">' + pct(p.correct, p.seen) + '%</div>' +
+    '<div class="muted">' + p.correct + ' / ' + p.seen + ' 正解</div></div>' +
+    '<div class="btnrow">' +
+    '<button class="btn primary grow" data-act="practiceAgain" data-id="' + esc(p.deckId) + '">もう一度</button>' +
+    '<button class="btn grow" data-act="openStats" data-id="' + esc(p.deckId) + '">📊 弱点</button></div>' +
+    '<button class="btn ghost block" data-act="home" style="margin-top:8px">🏠 ホーム</button>';
+  state.practice = null;
+}
 
 /* ---------- 試験セットアップ（模試選択・章絞り・低正答率絞り・問題数 を組合せ可） ---------- */
 function renderExamSetup(deckId) {
@@ -1156,15 +1313,15 @@ function buildAddedExplMd(deckId) {
 function renderStatsDeck(deckId) {
   var d = Store.getDeck(deckId); if (!d) return show('stats');
   var at = Store.attempts(deckId);
-  if (!at.length) {
+  if (!at.length && PStats.count(deckId) === 0) {
     app.innerHTML = '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="stats">← 戻る</button>' +
       '<h3 class="grow" style="margin:0 0 0 8px">' + esc(d.name) + '</h3></div>' +
-      '<div class="empty">まだ受験記録がありません。<br>試験モードを1回受けると、ここに弱点が出ます。<br>' +
+      '<div class="empty">まだ記録がありません。<br>試験モードや練習モードをやると、ここに弱点が出ます。<br>' +
       '<button class="btn primary" data-act="startExam" data-id="' + esc(deckId) + '" style="margin-top:12px">📝 試験を始める</button></div></div>';
     return;
   }
   var gs = genreStats(deckId), qs = qStats(deckId);
-  var best = 0, lastP = pct(at[at.length - 1].correctCount, at[at.length - 1].total);
+  var best = 0, lastP = at.length ? pct(at[at.length - 1].correctCount, at[at.length - 1].total) : 0;
   at.forEach(function (a) { best = Math.max(best, pct(a.correctCount, a.total)); });
   // 正答率の推移（直近12回）
   var trend = at.slice(-12).map(function (a) { return pct(a.correctCount, a.total); });
@@ -1293,6 +1450,15 @@ var handlers = {
   back: function (t) { show(t.dataset.to); },
   gloss: function (t) { showGloss(t.dataset.term); },
   glossClose: function () { var s = document.getElementById('glossSheet'); if (s) s.remove(); },
+  // 練習モード
+  startPractice: function (t) { show('practiceSetup', t.dataset.id); },
+  beginPractice: function () { beginPractice(); },
+  pPick: function (t) { pPick(parseInt(t.dataset.n, 10)); },
+  pReveal: function () { pReveal(); },
+  pNext: function () { pNext(); },
+  pBm: function (t) { var p = state.practice; BM.toggle(p.deckId, parseInt(t.dataset.num, 10)); renderPracticeRun(); },
+  pQuit: function () { if (confirm('練習をやめますか？（成績は弱点分析に反映済み）')) { state.practice = null; show('practice'); } },
+  practiceAgain: function (t) { show('practiceSetup', t.dataset.id); },
   startExam: function (t) { show('examSetup', t.dataset.id); },
   beginExam: function () { beginExam(); },
   openReview: function (t) { show('reviewRun', { deckId: t.dataset.id }); },
