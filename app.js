@@ -295,6 +295,11 @@ function deckNameFromFile(fname) {
   n = n.replace(/[①-⑨]/g, function (c) { return String(circ.indexOf(c) + 1); });
   return n || 'デッキ';
 }
+/* デッキ名の表示用ラベル（算用数字→丸数字に統一：模試3→模試③） */
+function deckLabel(name) {
+  var c = '①②③④⑤⑥⑦⑧⑨';
+  return String(name == null ? '' : name).replace(/[1-9]/g, function (d) { return c[+d - 1]; });
+}
 /* Gemini解説JSON（{ "1":"md", "2":"md", ... }）を {番号: 本文} に */
 function parseGeminiJson(text) {
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
@@ -601,7 +606,7 @@ function renderHome() {
     var doneA = Object.keys(ae.answers || {}).filter(function (k) { return ae.answers[k] && ae.answers[k].length; }).length;
     html += '<div class="card" style="border-color:var(--warn)">' +
       '<div class="row"><div class="grow"><b>⏸ 中断中の試験があります</b>' +
-      '<div class="small muted">' + esc(ae.deckName) + '：' + ae.qs.length + '問中 ' + doneA + '問 回答済</div></div></div>' +
+      '<div class="small muted">' + esc(deckLabel(ae.deckName)) + '：' + ae.qs.length + '問中 ' + doneA + '問 回答済</div></div></div>' +
       '<div class="btnrow" style="margin-top:10px">' +
       '<button class="btn primary grow" data-act="resumeExam">▶ 再開する</button>' +
       '<button class="btn ghost danger" data-act="discardExam">破棄</button></div></div>';
@@ -620,7 +625,7 @@ function renderHome() {
       var lastTxt = last ? (pct(last.correctCount, last.total) + '%（' + last.correctCount + '/' + last.total + '）') : '未受験';
       var best = 0; at.forEach(function (a) { best = Math.max(best, pct(a.correctCount, a.total)); });
       html += '<div class="card">' +
-        '<div class="row"><div class="grow"><b style="font-size:17px">' + esc(d.name) + '</b>' +
+        '<div class="row"><div class="grow"><b style="font-size:17px">' + esc(deckLabel(d.name)) + '</b>' +
         (d.hasChecklist ? ' <span class="tag">章分類済</span>' : '') +
         (d.hasGemini ? ' <span class="tag">Gemini解説</span>' : '') +
         '<div class="small muted">' + d.count + '問 ・ 受験' + at.length + '回 ・ 直近 ' + lastTxt + (at.length ? ' ・ ベスト ' + best + '%' : '') + '</div></div></div>' +
@@ -766,7 +771,7 @@ function pickDeckCard(actLabel, act) {
   var h = '<div class="card"><h3>' + actLabel + '</h3><p class="small muted">デッキを選択</p>';
   decks.forEach(function (d) {
     h += '<button class="btn block" style="justify-content:space-between;margin:6px 0" data-act="' + act + '" data-id="' + esc(d.id) + '">' +
-      '<span>' + esc(d.name) + '</span><span class="small muted">' + d.count + '問</span></button>';
+      '<span>' + esc(deckLabel(d.name)) + '</span><span class="small muted">' + d.count + '問</span></button>';
   });
   return h + '</div>';
 }
@@ -789,7 +794,7 @@ function renderPracticeSetup(deckId) {
   var d = Store.getDeck(deckId);
   state.pSetup = deckId;
   var genres = deckGenres(d);
-  var deckOpts = decks.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === deckId ? ' selected' : '') + '>' + esc(x.name) + '（' + x.count + '問）</option>'; }).join('');
+  var deckOpts = decks.map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === deckId ? ' selected' : '') + '>' + esc(deckLabel(x.name)) + '（' + x.count + '問）</option>'; }).join('');
   var gopts = genres.map(function (g) { return '<option value="' + esc(g.code) + '">' + esc(g.name) + '（' + g.count + '）</option>'; }).join('');
   app.innerHTML =
     '<div class="card"><h3>🎯 練習モード</h3>' +
@@ -894,7 +899,7 @@ function renderPracticeResult() {
   var p = state.practice;
   app.innerHTML =
     '<div class="card" style="text-align:center">' +
-    '<div class="small muted">🎯 練習おつかれさま（' + esc(p.deckName) + '）</div>' +
+    '<div class="small muted">🎯 練習おつかれさま（' + esc(deckLabel(p.deckName)) + '）</div>' +
     '<div class="bigpct">' + pct(p.correct, p.seen) + '%</div>' +
     '<div class="muted">' + p.correct + ' / ' + p.seen + ' 正解</div></div>' +
     '<div class="btnrow">' +
@@ -913,7 +918,7 @@ function renderExamSetup(deckId) {
   state.setupDeck = deckId;
   var genres = deckGenres(d);
   var deckOpts = decks.map(function (x) {
-    return '<option value="' + esc(x.id) + '"' + (x.id === deckId ? ' selected' : '') + '>' + esc(x.name) + '（' + x.count + '問）</option>';
+    return '<option value="' + esc(x.id) + '"' + (x.id === deckId ? ' selected' : '') + '>' + esc(deckLabel(x.name)) + '（' + x.count + '問）</option>';
   }).join('');
   var gopts = '<option value="">全ジャンル（章）</option>' + genres.map(function (g) {
     return '<option value="' + esc(g.code) + '">' + esc(g.name) + '（' + g.count + '）</option>';
@@ -1177,7 +1182,7 @@ function renderExamResult(a) {
 
   app.innerHTML =
     '<div class="card" style="text-align:center">' +
-    '<div class="small muted">' + esc(a.deckName) + ' ・ ' + fmtDate(a.finishedAt) + '</div>' +
+    '<div class="small muted">' + esc(deckLabel(a.deckName)) + ' ・ ' + fmtDate(a.finishedAt) + '</div>' +
     '<div class="bigpct" style="color:' + (pass ? 'var(--ok)' : 'var(--bad)') + '">' + p + '%</div>' +
     '<div class="' + (pass ? '' : 'muted') + '">' + (pass ? '🎉 合格ライン(72%)突破！' : '合格ライン 72% まで あと ' + (72 - p) + 'pt') + '</div>' +
     deltaHtml +
@@ -1223,7 +1228,7 @@ function renderReviewRun(arg) {
   }
   if (!list.length) {
     app.innerHTML = '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="review">← デッキ</button>' +
-      '<span class="grow"></span><span class="small muted">' + esc(d.name) + '</span></div>' +
+      '<span class="grow"></span><span class="small muted">' + esc(deckLabel(d.name)) + '</span></div>' +
       reviewToolbar(rv, d) + '<div class="empty">該当する問題がありません</div></div>';
     bindReviewToolbar();
     return;
@@ -1238,7 +1243,7 @@ function renderReviewRun(arg) {
   app.innerHTML =
     '<div class="card" style="margin-top:6px">' +
     '<div class="row"><button class="btn ghost sm" data-act="back" data-to="review">← デッキ</button>' +
-    '<span class="grow"></span><span class="small muted">' + esc(d.name) + '</span></div>' +
+    '<span class="grow"></span><span class="small muted">' + esc(deckLabel(d.name)) + '</span></div>' +
     reviewToolbar(rv, d) + '</div>' +
     '<div class="card">' +
     '<div class="qmeta"><span>' + (rv.idx + 1) + ' / ' + list.length + '（Q' + q.num + '）</span>' +
@@ -1315,7 +1320,7 @@ function renderStatsDeck(deckId) {
   var at = Store.attempts(deckId);
   if (!at.length && PStats.count(deckId) === 0) {
     app.innerHTML = '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="stats">← 戻る</button>' +
-      '<h3 class="grow" style="margin:0 0 0 8px">' + esc(d.name) + '</h3></div>' +
+      '<h3 class="grow" style="margin:0 0 0 8px">' + esc(deckLabel(d.name)) + '</h3></div>' +
       '<div class="empty">まだ記録がありません。<br>試験モードや練習モードをやると、ここに弱点が出ます。<br>' +
       '<button class="btn primary" data-act="startExam" data-id="' + esc(deckId) + '" style="margin-top:12px">📝 試験を始める</button></div></div>';
     return;
@@ -1365,7 +1370,7 @@ function renderStatsDeck(deckId) {
 
   app.innerHTML =
     '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="stats">← 戻る</button>' +
-    '<h3 class="grow" style="margin:0 0 0 8px">' + esc(d.name) + ' 弱点</h3></div>' +
+    '<h3 class="grow" style="margin:0 0 0 8px">' + esc(deckLabel(d.name)) + ' 弱点</h3></div>' +
     '<div class="kpi" style="margin-top:10px">' +
     '<div class="b"><b>' + at.length + '</b><span class="small muted">受験回数</span></div>' +
     '<div class="b"><b>' + lastP + '%</b><span class="small muted">直近</span></div>' +
