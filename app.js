@@ -94,6 +94,58 @@ var Settings = {
   }
 };
 
+/* ---------- アプリ内で追記する解説（端末内保存） ---------- */
+var ExplStore = {
+  all: function (deckId) { return LS.get('saa.expl.' + deckId, {}); },
+  get: function (deckId, num) { return ExplStore.all(deckId)[num]; },
+  set: function (deckId, num, text) {
+    var m = ExplStore.all(deckId);
+    if (text && text.trim()) m[num] = text; else delete m[num];
+    LS.set('saa.expl.' + deckId, m);
+  },
+  count: function (deckId) { return Object.keys(ExplStore.all(deckId)).length; }
+};
+/* 表示に使う解説（自分で追記したもの＞取込んだGemini解説） */
+function effExpl(deckId, q) { return ExplStore.get(deckId, q.num) || q.gemini || ''; }
+
+/* ---------- Gemini API（任意・キーは端末内保存） ---------- */
+function geminiKey() { return LS.get('saa.gkey', ''); }
+function geminiModel() { return LS.get('saa.gmodel', 'gemini-2.5-flash'); }
+function ensureGeminiKey() {
+  var k = geminiKey();
+  if (k) return k;
+  k = prompt('Gemini APIキーを入力してください（このブラウザにのみ保存）\n無料取得: https://aistudio.google.com/apikey');
+  if (k && k.trim()) { LS.set('saa.gkey', k.trim()); return k.trim(); }
+  return '';
+}
+function buildGeminiPrompt(q) {
+  var lines = [];
+  lines.push('あなたはAWS認定ソリューションアーキテクト アソシエイト(SAA-C03)の講師です。');
+  lines.push('次の問題について、日本語でわかりやすく詳しい解説をMarkdownで書いてください。');
+  lines.push('構成：「1. 要点と正解の理由」「2. 各選択肢の解説（なぜ正解/不正解か）」「3. 押さえるべき重要ポイント」「4. 試験対策のひとこと」。表は使わず見出し(###)と箇条書きで。');
+  lines.push('');
+  lines.push('### 問題');
+  lines.push(q.text);
+  lines.push('### 選択肢');
+  q.choices.forEach(function (c, i) { lines.push((i + 1) + '. ' + c); });
+  lines.push('### 正解番号: ' + (q.correct.join(', ') || '不明'));
+  if (q.explanation) { lines.push('### 公式解説（参考。これを噛み砕いて説明）'); lines.push(q.explanation); }
+  return lines.join('\n');
+}
+function callGemini(promptText, key) {
+  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + geminiModel() + ':generateContent?key=' + encodeURIComponent(key);
+  return fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: promptText }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 4096 } })
+  }).then(function (r) {
+    if (!r.ok) return r.text().then(function (t) { throw new Error('API ' + r.status + ': ' + t.slice(0, 200)); });
+    return r.json();
+  }).then(function (data) {
+    var cand = (data.candidates || [{}])[0];
+    return ((cand.content || {}).parts || []).map(function (p) { return p.text || ''; }).join('').trim();
+  });
+}
+
 /* ---------- 中断した試験の保存／再開 ---------- */
 function saveActiveExam() {
   if (state.exam) LS.set('saa.activeExam', state.exam);
@@ -234,10 +286,24 @@ function detectCsvType(rows) {
   return 'unknown';
 }
 function deckNameFromFile(fname) {
-  return fname.replace(/\.(csv|md)$/i, '')
+  var n = fname.replace(/\.(csv|md|json)$/i, '')
     .replace(/_問題集.*$/, '').replace(/_章別チェックリスト.*$/, '')
     .replace(/_Gemini解説.*$/i, '').replace(/_学習データ.*$/, '')
-    .replace(/_チェック済$/, '').trim() || 'デッキ';
+    .replace(/_チェック済$/, '').trim();
+  // 丸数字→算用数字に統一（模試② と 模試2 を同じデッキ扱い）
+  var circ = '①②③④⑤⑥⑦⑧⑨';
+  n = n.replace(/[①-⑨]/g, function (c) { return String(circ.indexOf(c) + 1); });
+  return n || 'デッキ';
+}
+/* Gemini解説JSON（{ "1":"md", "2":"md", ... }）を {番号: 本文} に */
+function parseGeminiJson(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  var obj = JSON.parse(text), map = {};
+  Object.keys(obj).forEach(function (k) {
+    var num = parseInt(k, 10);
+    if (!isNaN(num) && typeof obj[k] === 'string' && obj[k].trim()) map[num] = obj[k];
+  });
+  return map;
 }
 /* Gemini解説md（## 問題 N 見出し区切り）を {番号: 本文} に */
 function parseGeminiMd(text) {
@@ -388,11 +454,12 @@ function choicesView(q, selected) {
   });
   return h;
 }
-/* 解説ブロック: Gemini解説を主、CSV解説を「詳しい解説」に */
-function explBlock(q) {
-  if (q.gemini) {
+/* 解説ブロック: Gemini解説を主、CSV解説を「詳しい解説」に。gtextで上書き可 */
+function explBlock(q, gtext) {
+  if (gtext === undefined) gtext = q.gemini;
+  if (gtext) {
     var h = '<div class="q-section-label small muted" style="margin-top:12px">解説 <span class="tag">Gemini</span></div>' +
-      '<div class="expl">' + mdToHtml(q.gemini) + '</div>';
+      '<div class="expl">' + mdToHtml(gtext) + '</div>';
     if (q.explanation) {
       h += '<details class="moredetail"><summary>📄 詳しい解説（原文）を表示</summary>' +
         '<div class="expl">' + esc(q.explanation) + '</div></details>';
@@ -499,12 +566,12 @@ function renderImport() {
     '<p class="small muted">ファイルを選ぶ／ここにドラッグ＆ドロップ。問題は端末内のみに保存されます。</p>' +
     '<div class="drop" id="drop">' +
     '<div style="font-size:34px">🗂️</div><div>タップしてファイルを選択<br><span class="small muted">または ここにドロップ</span></div>' +
-    '<input type="file" id="file" accept=".csv,.md" multiple style="display:none" /></div>' +
+    '<input type="file" id="file" accept=".csv,.md,.json" multiple style="display:none" /></div>' +
     '<div class="spacer"></div>' +
     '<p class="small muted">対応ファイル：<br>① <code class="k">○○_問題集.csv</code>（必須／問題・選択肢・正解・解説）<br>' +
     '② <code class="k">○○_章別チェックリスト.csv</code>（任意／ジャンル分類を精密化）<br>' +
-    '③ <code class="k">○○_Gemini解説.md</code>（任意／Gemini解説を「解説」に表示。原文は「詳しい解説」に）<br>' +
-    '同じ模試の①②③をまとめて選ぶと自動で1デッキに統合します。</p>' +
+    '③ <code class="k">○○_Gemini解説.json</code> または <code class="k">.md</code>（任意／Gemini解説を表示）<br>' +
+    '同じ模試のファイルをまとめて選ぶと自動で1デッキに統合します（模試② と 模試2 は同じ扱い）。</p>' +
     '</div>';
   var drop = $('#drop'), file = $('#file');
   drop.addEventListener('click', function () { file.click(); });
@@ -522,7 +589,7 @@ function handleFiles(fileList) {
   if (!files.length) return;
   // 問題集→チェックリスト→Gemini解説 の順に処理（統合のため）
   function rank(f) {
-    if (/Gemini解説/.test(f.name) || /\.md$/i.test(f.name)) return 2;
+    if (/Gemini解説/.test(f.name) || /\.(md|json)$/i.test(f.name)) return 2;
     if (/チェックリスト/.test(f.name)) return 1;
     return 0;
   }
@@ -541,10 +608,19 @@ function handleFiles(fileList) {
 }
 function importOne(fname, text) {
   var name = deckNameFromFile(fname);
+  // Gemini解説JSON（{ "1":"...", ... }）
+  if (/\.json$/i.test(fname)) {
+    var dj = Store.getDeck(name);
+    if (!dj) throw new Error('先に「' + name + '」の問題集CSVを取り込んでください');
+    var nj = applyGemini(dj, parseGeminiJson(text));
+    if (!nj) throw new Error(name + '：一致する問題番号が0件');
+    Store.saveDeck(dj);
+    return '✅ ' + name + ' にGemini解説(JSON) ' + nj + '問';
+  }
   // Gemini解説md
   if (/\.md$/i.test(fname) || /Gemini解説/.test(fname)) {
     var dg = Store.getDeck(name);
-    if (!dg) throw new Error('先に「' + name + '_問題集.csv」を取り込んでください');
+    if (!dg) throw new Error('先に「' + name + '」の問題集CSVを取り込んでください');
     var n = applyGemini(dg, parseGeminiMd(text));
     if (!n) throw new Error(name + '：一致する問題番号が0件');
     Store.saveDeck(dg);
@@ -755,7 +831,7 @@ function renderExamRun() {
     '</div>' +
     '<div class="qtext">' + esc(q.text) + '</div>' +
     ch +
-    (revealed ? explBlock(q) : '') +
+    (revealed ? explBlock(q, effExpl(ex.deckId, q)) : '') +
     '</div>' +
     '<div class="card"><div class="navgrid">' + navGridHtml() + '</div></div>' +
     '<div class="sticky-bottom">' + bottom + '</div>' +
@@ -935,6 +1011,8 @@ function renderReviewRun(arg) {
   var q = list[rv.idx];
   var st = qs[q.num];
   var mine = lastA[q.num];
+  var gtext = effExpl(deckId, q);
+  var added = !!ExplStore.get(deckId, q.num);
 
   app.innerHTML =
     '<div class="card" style="margin-top:6px">' +
@@ -948,12 +1026,14 @@ function renderReviewRun(arg) {
     '<span class="pill g">' + esc(q.genre) + '</span>' +
     '<span class="pill' + (q.importance === '高' ? ' hi' : '') + '">重要度 ' + esc(q.importance) + '</span>' +
     '<span class="grow"></span>' +
-    '<button class="btn ghost sm" data-act="rvBm" data-num="' + q.num + '">' + (BM.has(deckId, q.num) ? '★ 登録済' : '☆ ブックマーク') + '</button>' +
+    '<button class="btn ghost sm" data-act="explEdit" data-num="' + q.num + '">' + (added ? '✏️ 解説編集' : '➕ 解説追加') + '</button>' +
+    '<button class="btn ghost sm" data-act="rvBm" data-num="' + q.num + '">' + (BM.has(deckId, q.num) ? '★' : '☆') + '</button>' +
     '</div>' +
     '<div class="qtext">' + esc(q.text) + '</div>' +
     choicesView(q, mine ? mine.selected : []) +
     (mine ? '<div class="small ' + (mine.isCorrect ? 'okc' : 'ngc') + '" style="margin-top:6px">前回のあなた: ' + (mine.isCorrect ? '正解 ✓' : '不正解 ✕') + '</div>' : '') +
-    explBlock(q) +
+    (rv.editing ? explEditor(deckId, q, gtext) : explBlock(q, gtext)) +
+    (added && !rv.editing ? '<div class="small muted" style="margin-top:4px">※この解説はアプリで追記したものです</div>' : '') +
     '</div>' +
     '<div class="sticky-bottom">' +
     '<button class="btn" data-act="rvPrev" ' + (rv.idx === 0 ? 'disabled' : '') + '>← 前</button>' +
@@ -981,6 +1061,31 @@ function bindReviewToolbar() {
     s.addEventListener('change', function () { state.review.search = this.value.trim(); state.review.idx = 0; show('reviewRun', { deckId: state.review.deckId }); });
     s.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); this.blur(); } });
   }
+}
+/* 解説エディタ（アプリ内で追記・編集） */
+function explEditor(deckId, q, cur) {
+  return '<div class="q-section-label small muted" style="margin-top:12px">✏️ 解説を追記・編集（Markdown可）</div>' +
+    '<textarea id="explTA" class="expl-edit" placeholder="Geminiやメモの解説をここに貼り付け／入力。&#10;または「✨ Geminiで生成」で自動作成（要APIキー）。">' + esc(cur || '') + '</textarea>' +
+    '<div class="btnrow" style="margin-top:8px">' +
+    '<button class="btn primary sm" data-act="explSave" data-num="' + q.num + '">💾 保存</button>' +
+    '<button class="btn sm" data-act="explGen" data-num="' + q.num + '">✨ Geminiで生成</button>' +
+    '<button class="btn ghost sm" data-act="explCancel">キャンセル</button>' +
+    (ExplStore.get(deckId, q.num) ? '<button class="btn ghost sm danger" data-act="explClear" data-num="' + q.num + '">削除</button>' : '') +
+    '</div>' +
+    '<p class="small muted" style="margin:6px 0 0">保存先は端末内のみ。複数端末で使う/バックアップするなら「📊弱点 → 追記解説を書き出し」で <code class="k">_Gemini解説.md</code> に出力できます。</p>';
+}
+/* アプリで追記した解説を _Gemini解説.md 形式で書き出し */
+function buildAddedExplMd(deckId) {
+  var d = Store.getDeck(deckId), m = ExplStore.all(deckId);
+  var nums = Object.keys(m).map(Number).sort(function (a, b) { return a - b; });
+  var qByNum = {}; d.questions.forEach(function (q) { qByNum[q.num] = q; });
+  var lines = ['# ' + d.name + ' Gemini解説まとめ（アプリ追記分）', '', '> ' + nums.length + ' 問ぶん（書き出し: ' + fmtDate(Date.now()) + '）', ''];
+  nums.forEach(function (n) {
+    var q = qByNum[n] || {};
+    lines.push('## 問題 ' + n + '　' + (q.genre || ''));
+    lines.push(''); lines.push(m[n]); lines.push(''); lines.push('---'); lines.push('');
+  });
+  return lines.join('\n');
 }
 
 /* ---------- 弱点（統計） ---------- */
@@ -1051,7 +1156,10 @@ function renderStatsDeck(deckId) {
     '<div class="card"><h3>🤖 弱点分析をAIに依頼</h3>' +
     '<p class="small muted">下のデータをコピーしてClaude等に貼ると、弱点分析・学習プランを作ってもらえます（問題文は含めず、ジャンル別成績とQ番号のみ）。</p>' +
     '<div class="btnrow"><button class="btn primary grow" data-act="copyWeak" data-id="' + esc(deckId) + '">📋 データをコピー</button>' +
-    '<button class="btn grow" data-act="saveWeak" data-id="' + esc(deckId) + '">💾 .md保存</button></div></div>';
+    '<button class="btn grow" data-act="saveWeak" data-id="' + esc(deckId) + '">💾 .md保存</button></div></div>' +
+    '<div class="card"><h3>✏️ 追記した解説</h3>' +
+    '<p class="small muted">解説モードで追記/編集した解説：<b>' + ExplStore.count(deckId) + '問</b>。<code class="k">_Gemini解説.md</code>として書き出すと、他端末への引継ぎやバックアップに使えます。</p>' +
+    '<button class="btn block" data-act="exportAddedExpl" data-id="' + esc(deckId) + '">📝 追記解説を書き出し（_Gemini解説.md）</button></div>';
 }
 
 /* ---------- 弱点エクスポート ---------- */
@@ -1163,14 +1271,44 @@ var handlers = {
   },
   // review
   reviewOne: function (t) { show('reviewRun', { deckId: t.dataset.id, num: parseInt(t.dataset.num, 10) }); },
-  rvBm: function (t) { BM.toggle(state.review.deckId, parseInt(t.dataset.num, 10)); show('reviewRun', { deckId: state.review.deckId }); },
-  rvFilter: function (t) { state.review.filter = t.dataset.f; state.review.idx = 0; show('reviewRun', { deckId: state.review.deckId }); },
-  rvGenre: function (t) { state.review.filter = 'genre'; state.review.genre = t.dataset.g; state.review.idx = 0; show('reviewRun', { deckId: state.review.deckId }); },
-  rvPrev: function () { if (state.review.idx > 0) { state.review.idx--; show('reviewRun', { deckId: state.review.deckId }); } },
-  rvNext: function () { if (state.review.idx < state.reviewList.length - 1) { state.review.idx++; show('reviewRun', { deckId: state.review.deckId }); } },
+  rvBm: function (t) { var r = state.review; r.editing = false; BM.toggle(r.deckId, parseInt(t.dataset.num, 10)); show('reviewRun', { deckId: r.deckId }); },
+  rvFilter: function (t) { var r = state.review; r.editing = false; r.filter = t.dataset.f; r.idx = 0; show('reviewRun', { deckId: r.deckId }); },
+  rvGenre: function (t) { var r = state.review; r.editing = false; r.filter = 'genre'; r.genre = t.dataset.g; r.idx = 0; show('reviewRun', { deckId: r.deckId }); },
+  rvPrev: function () { var r = state.review; r.editing = false; if (r.idx > 0) { r.idx--; show('reviewRun', { deckId: r.deckId }); } },
+  rvNext: function () { var r = state.review; r.editing = false; if (r.idx < state.reviewList.length - 1) { r.idx++; show('reviewRun', { deckId: r.deckId }); } },
+  // 解説の追記・編集（アプリ内）
+  explEdit: function () { state.review.editing = true; show('reviewRun', { deckId: state.review.deckId }); },
+  explCancel: function () { state.review.editing = false; show('reviewRun', { deckId: state.review.deckId }); },
+  explSave: function (t) {
+    var ta = $('#explTA'); if (!ta) return;
+    ExplStore.set(state.review.deckId, parseInt(t.dataset.num, 10), ta.value);
+    state.review.editing = false; toast('解説を保存しました'); show('reviewRun', { deckId: state.review.deckId });
+  },
+  explClear: function (t) {
+    if (!confirm('この問題の追記解説を削除しますか？')) return;
+    ExplStore.set(state.review.deckId, parseInt(t.dataset.num, 10), '');
+    state.review.editing = false; show('reviewRun', { deckId: state.review.deckId });
+  },
+  explGen: function (t) {
+    var deckId = state.review.deckId, num = parseInt(t.dataset.num, 10);
+    var d = Store.getDeck(deckId); var q = d.questions.find(function (x) { return x.num === num; });
+    var key = ensureGeminiKey(); if (!key) { toast('APIキーが未設定です'); return; }
+    var ta = $('#explTA'); if (ta) { ta.value = '✨ Geminiが生成中…しばらくお待ちください'; ta.disabled = true; }
+    callGemini(buildGeminiPrompt(q), key).then(function (text) {
+      var ta2 = $('#explTA'); if (ta2) { ta2.disabled = false; ta2.value = text || '（空の応答）'; }
+      toast('生成しました。内容を確認して「💾保存」を押してください');
+    }).catch(function (e) {
+      var ta2 = $('#explTA'); if (ta2) { ta2.disabled = false; ta2.value = ''; }
+      toast('生成失敗: ' + (e.message || e));
+    });
+  },
   // weakness export
   copyWeak: function (t) { copyText(buildWeaknessMd(t.dataset.id)); },
-  saveWeak: function (t) { var d = Store.getDeck(t.dataset.id); saveTextFile(d.name + '_学習データ.md', buildWeaknessMd(t.dataset.id)); toast('保存しました'); }
+  saveWeak: function (t) { var d = Store.getDeck(t.dataset.id); saveTextFile(d.name + '_学習データ.md', buildWeaknessMd(t.dataset.id)); toast('保存しました'); },
+  exportAddedExpl: function (t) {
+    var id = t.dataset.id; if (ExplStore.count(id) === 0) { toast('追記した解説がありません'); return; }
+    var d = Store.getDeck(id); saveTextFile(d.name + '_Gemini解説_追記.md', buildAddedExplMd(id)); toast('書き出しました');
+  }
 };
 function doRestore(fileList) {
   var f = (fileList || [])[0]; if (!f) return;
