@@ -555,7 +555,7 @@ function decorateGlossary() {
   var re = glossRe(); if (!re) return;
   var boxes = app.querySelectorAll('.expl');
   for (var b = 0; b < boxes.length; b++) {
-    var box = boxes[b], seen = {};
+    var box = boxes[b];
     var walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, null, false);
     var nodes = [], node;
     while ((node = walker.nextNode())) nodes.push(node);
@@ -569,8 +569,7 @@ function decorateGlossary() {
       var frag = document.createDocumentFragment(), last = 0, m, used = false;
       while ((m = re.exec(s))) {
         var term = m[0];
-        if (seen[term]) continue;          // 各ボックスで初出のみリンク化
-        seen[term] = true; used = true;
+        used = true;                       // 出現するたびにリンク化
         frag.appendChild(document.createTextNode(s.slice(last, m.index)));
         var span = document.createElement('span');
         var ty = (GLOSSARY[term] && GLOSSARY[term].t) || 'it';
