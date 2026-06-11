@@ -626,10 +626,11 @@ function renderHome() {
       var last = at.length ? at[at.length - 1] : null;
       var lastTxt = last ? (pct(last.correctCount, last.total) + '%（' + last.correctCount + '/' + last.total + '）') : '未受験';
       var best = 0; at.forEach(function (a) { best = Math.max(best, pct(a.correctCount, a.total)); });
+      var gc = d.questions.filter(function (q) { return q.gemini; }).length;
       html += '<div class="card">' +
         '<div class="row"><div class="grow"><b style="font-size:17px">' + esc(deckLabel(d.name)) + '</b>' +
         (d.hasChecklist ? ' <span class="tag">章分類済</span>' : '') +
-        (d.hasGemini ? ' <span class="tag">Gemini解説</span>' : '') +
+        (gc > 0 ? ' <span class="tag">Gemini解説 ' + gc + '/' + d.count + '</span>' : '') +
         '<div class="small muted">' + d.count + '問 ・ 受験' + at.length + '回 ・ 直近 ' + lastTxt + (at.length ? ' ・ ベスト ' + best + '%' : '') + '</div></div></div>' +
         '<div class="btnrow" style="margin-top:10px">' +
         '<button class="btn primary sm" data-act="startExam" data-id="' + esc(d.id) + '">📝 試験</button>' +
