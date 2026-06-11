@@ -298,7 +298,9 @@ function deckNameFromFile(fname) {
 /* デッキ名の表示用ラベル（算用数字→丸数字に統一：模試3→模試③） */
 function deckLabel(name) {
   var c = '①②③④⑤⑥⑦⑧⑨';
-  return String(name == null ? '' : name).replace(/[1-9]/g, function (d) { return c[+d - 1]; });
+  return String(name == null ? '' : name)
+    .replace(/[０-９]/g, function (d) { return String.fromCharCode(d.charCodeAt(0) - 0xFEE0); }) // 全角→半角
+    .replace(/[1-9]/g, function (d) { return c[+d - 1]; });
 }
 /* Gemini解説JSON（{ "1":"md", "2":"md", ... }）を {番号: 本文} に */
 function parseGeminiJson(text) {
@@ -1629,7 +1631,9 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     if (refreshing) return; refreshing = true; location.reload();
   });
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw.js').then(function (reg) {
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(function (reg) {
+      reg.update();  // 起動ごとに更新チェック
+      if (reg.waiting && navigator.serviceWorker.controller) showUpdateBanner(reg.waiting);
       reg.addEventListener('updatefound', function () {
         var nw = reg.installing;
         if (!nw) return;
