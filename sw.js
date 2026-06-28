@@ -3,7 +3,7 @@
  * 問題データはユーザーがインポートして端末内(localStorage)に保存されるため、
  * このSWはネットワークへ問題を一切送らない。
  */
-const CACHE = 'saa-moshi-v25';
+const CACHE = 'saa-moshi-v26';
 const ASSETS = [
   './',
   './index.html',

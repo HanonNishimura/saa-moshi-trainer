@@ -218,6 +218,18 @@ textarea.conf-memo{width:100%;margin-top:8px;background:var(--bg);color:var(--in
 .focus-card{border-color:#a16207;background:linear-gradient(180deg,#2a2009,#1b2336)}
 .focus-card .btn.primary{background:linear-gradient(180deg,#f59e0b,#d97706);border-color:#b45309;color:#1a1206}
 
+/* 🎮 ながら復習（フラッシュカード） */
+.flash-card{border-color:#7c3aed;background:linear-gradient(180deg,#1e1635,#1b2336);cursor:pointer;min-height:200px}
+.flash-card.revealed{cursor:default}
+.flash-card .flash-choices{margin-top:8px}
+.flash-ch{display:flex;gap:8px;padding:5px 0;align-items:flex-start;border-top:1px solid var(--line);font-size:15px}
+.flash-ch .let{font-weight:800;min-width:1.6em;color:#c4b5fd}
+.flash-hint{margin-top:14px;text-align:center;color:var(--muted);font-size:13px}
+.flash-answer{margin-top:10px;padding:10px 12px;border-radius:12px;background:#0c2a18;border:1px solid #14532d;font-size:17px}
+.flash-answer b{font-size:20px;color:#86efac}
+.sticky-bottom .okbtn{border-color:#14532d;background:#0c2a18;color:#86efac;font-weight:700}
+.sticky-bottom .ngbtn{border-color:#7c2d12;background:#2a160b;color:#fdba74;font-weight:700}
+
 /* 問題ID pill（プリント・写真照合・AI管理用） */
 .pill.id{border-color:#7c3aed;color:#ddd6fe;background:#1e1635;font-weight:700;letter-spacing:.02em}
 

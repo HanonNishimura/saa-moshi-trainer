@@ -439,6 +439,8 @@ function quickFocusCard() {
     '<button class="btn grow" data-act="quickFocus" data-n="10">10問</button>' +
     '</div>' +
     '<div class="small muted" style="margin-top:6px">目安: 3問≈5分・5問≈8分・10問≈15分</div>' +
+    '<button class="btn block" data-act="startFlash" style="margin-top:10px">🎮 ながら復習（めくるだけ）</button>' +
+    '<div class="small muted" style="margin-top:4px">ゲームの合間にどうぞ。選ばず<b>タップ／スワイプでめくる</b>だけ。✓/△で弱点に反映。</div>' +
     '</div>';
 }
 var HwStreak = {
@@ -551,6 +553,92 @@ function startQuickFocus(n) {
   if (!qs.length) { toast('対象の問題が見つかりません'); return; }
   state.exam = { deckId: items[0].deckId, deckName: '⚡ 最重要' + qs.length + '問', qs: qs, idx: 0, answers: {}, flags: {}, startedAt: Date.now(), study: true, revealed: {}, hw: true };
   saveActiveExam(); show('examRun');
+}
+/* ---------- 🎮 ながら復習（めくるだけフラッシュカード） ---------- */
+/* ゲームの合間など隙間時間用。選択不要・タップ/スワイプでめくる・採点ノルマなし。
+   ✓/△だけ押せばSRS（弱点・宿題・スケジュール実績）に反映される。 */
+var FLASH_LETTERS = 'アイウエオカキクケコ';
+function buildFlashQueue() {
+  var pool = reviewPool(ActiveDeck.deckId());
+  function srt(arr) { arr.sort(function (a, b) { return (a.omoi ? 0 : 1) - (b.omoi ? 0 : 1) || a.box - b.box; }); }
+  var todo = pool.filter(function (x) { return !x.doneToday; });   // 今日まだ見ていないものを先に
+  var rest = pool.filter(function (x) { return x.doneToday; });
+  srt(todo); srt(rest);
+  return todo.concat(rest);
+}
+function startFlash() {
+  var q = buildFlashQueue();
+  if (!q.length) { toast('対象がありません。誤答（模試結果）を取込むと使えます'); return; }
+  state.flash = { items: q, idx: 0, revealed: false, seen: 0 };
+  show('flash');
+}
+function flashCur() {
+  var fl = state.flash; if (!fl || fl.idx >= fl.items.length) return null;
+  var it = fl.items[fl.idx];
+  var d = Store.getDeck(it.deckId); if (!d) return null;
+  var q = (d.questions || []).find(function (x) { return x.num === it.num; });
+  return q ? { it: it, q: q, deckName: d.name } : null;
+}
+function flashReveal() { var fl = state.flash; if (!fl || fl.revealed) return; fl.revealed = true; fl.seen++; renderFlash(); }
+function flashAdvance(correct) {
+  var fl = state.flash; if (!fl) return;
+  var c = flashCur();
+  if (c && correct != null) { SRS.grade(c.it.deckId, c.it.num, correct); HwStreak.bump(); }   // ✓/△でSRS反映
+  fl.idx++; fl.revealed = false; renderFlash();
+}
+function renderFlash() {
+  var fl = state.flash; if (!fl) return show('home');
+  // 末尾まで来たら完了画面
+  while (fl.idx < fl.items.length && !flashCur()) fl.idx++;
+  if (fl.idx >= fl.items.length) {
+    app.innerHTML = '<div class="card" style="text-align:center;margin-top:20px">' +
+      '<div class="bigpct">🎉</div><h3 style="margin:.2em 0">ひとめぐり完了！</h3>' +
+      '<div class="muted small">めくった ' + fl.seen + ' 枚 ・ お疲れさま</div>' +
+      '<div class="btnrow" style="margin-top:14px;justify-content:center">' +
+      '<button class="btn primary grow" data-act="flashRestart">🔁 もう一周</button>' +
+      '<button class="btn grow" data-act="home">🏠 ホーム</button></div></div>';
+    return;
+  }
+  var c = flashCur(), q = c.q, it = c.it;
+  var idl = qId(c.deckName || it.deckId, q.num);
+  var chs = (q.choices || []).map(function (ch, i) {
+    return '<div class="flash-ch"><span class="let">' + (FLASH_LETTERS[i] || (i + 1)) + '</span><span>' + esc(ch) + '</span></div>';
+  }).join('');
+  var head =
+    '<div class="row" style="align-items:center">' +
+    '<b class="grow">🎮 ながら復習</b>' +
+    '<span class="small muted">めくった ' + fl.seen + ' 枚</span>' +
+    '<button class="btn ghost sm" data-act="home" style="margin-left:8px">終了</button></div>';
+  var pills =
+    '<div class="row wrap" style="gap:6px;margin:8px 0 4px">' +
+    '<span class="pill id">🆔 ' + esc(idl) + '</span>' +
+    '<span class="pill g">' + esc(q.genre || '') + '</span>' +
+    (it.omoi ? '<span class="pill hi">🔴 思い込み</span>' : '') + '</div>';
+  var body;
+  if (!fl.revealed) {
+    body =
+      '<div class="card flash-card" data-act="flashReveal">' + pills +
+      '<div class="qtext">' + esc(q.text) + '</div>' +
+      '<div class="flash-choices">' + chs + '</div>' +
+      '<div class="flash-hint">タップ／スワイプで答えを見る 👀</div></div>' +
+      '<div class="sticky-bottom"><button class="btn primary grow" data-act="flashReveal">👀 答えを見る</button></div>';
+  } else {
+    var cor = (q.correct || []).map(function (n) { return FLASH_LETTERS[n - 1] || n; }).join('');
+    var theme = (q.correctTheme || '').trim();
+    var expl = effExpl(it.deckId, q);
+    body =
+      '<div class="card flash-card revealed">' + pills +
+      '<div class="qtext small">' + esc(q.text) + '</div>' +
+      '<div class="flash-answer">正解 <b>' + esc(cor) + '</b>' + (theme ? '　<span class="small">' + esc(theme) + '</span>' : '') + '</div>' +
+      (expl ? '<details class="moredetail"><summary>📄 解説を見る</summary><div class="expl">' + mdToHtml(expl) + '</div></details>' : '') +
+      '</div>' +
+      '<div class="sticky-bottom">' +
+      '<button class="btn grow okbtn" data-act="flashGood">✓ わかった</button>' +
+      '<button class="btn grow ngbtn" data-act="flashBad">△ あやしい</button>' +
+      '<button class="btn ghost" data-act="flashNext">次へ ＞</button></div>';
+  }
+  app.innerHTML = head + body;
+  decorateGlossary();
 }
 function renderHomework() {
   var today = ymdLocal(new Date()), hw = state.lastHw;
@@ -1127,7 +1215,7 @@ function setNav(view) {
 var NAV_MAP = {
   home: 'home', import: 'import', exam: 'exam', examSetup: 'exam', examRun: 'exam', examResult: 'exam',
   practice: 'practice', practiceSetup: 'practice', practiceRun: 'practice',
-  review: 'review', reviewRun: 'review', stats: 'stats', statsDeck: 'stats', schedule: 'home'
+  review: 'review', reviewRun: 'review', stats: 'stats', statsDeck: 'stats', schedule: 'home', flash: 'home'
 };
 function show(view, arg) {
   state.view = view;
@@ -1149,6 +1237,7 @@ function show(view, arg) {
   else if (view === 'practiceRun') renderPracticeRun();
   else if (view === 'login') renderLogin();
   else if (view === 'hwResult') renderHwResult();
+  else if (view === 'flash') renderFlash();
   else if (view === 'homework') renderHomework();
   else if (view === 'schedule') renderSchedule();
   updateDeckChip();
@@ -2370,7 +2459,13 @@ var handlers = {
   },
   hwTutorCopy: function () { copyText(buildTodayTutorPrompt(state.lastHw || { items: [] })); },
   hwPrint: function () { printHomework(); },
-  quickFocus: function (t) { startQuickFocus(parseInt(t.dataset.n, 10) || 5); }
+  quickFocus: function (t) { startQuickFocus(parseInt(t.dataset.n, 10) || 5); },
+  startFlash: function () { startFlash(); },
+  flashReveal: function () { flashReveal(); },
+  flashGood: function () { flashAdvance(true); },
+  flashBad: function () { flashAdvance(false); },
+  flashNext: function () { flashAdvance(null); },
+  flashRestart: function () { startFlash(); }
 };
 function doRestore(fileList) {
   var f = (fileList || [])[0]; if (!f) return;
@@ -2443,6 +2538,8 @@ document.addEventListener('keydown', function (e) {
     } else if (state.view === 'reviewRun' && state.review) {
       if (fwd) { if (state.review.idx < (state.reviewList || []).length - 1) { state.review.idx++; show('reviewRun', { deckId: state.review.deckId }); } }
       else if (state.review.idx > 0) { state.review.idx--; show('reviewRun', { deckId: state.review.deckId }); }
+    } else if (state.view === 'flash' && state.flash) {
+      if (fwd) { if (!state.flash.revealed) flashReveal(); else flashAdvance(null); }   // 左スワイプ＝めくる→次へ
     }
   }, { passive: true });
 })();
