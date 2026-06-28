@@ -1366,6 +1366,7 @@ function show(view, arg) {
   state.view = view;
   if (NAV_MAP[view]) setNav(NAV_MAP[view]);
   document.body.classList.toggle('exam-wide', view === 'examRun');  // PC幅の2カラム出題
+  document.body.setAttribute('data-view', view);   // PC幅で画面ごとのレイアウト出し分け用
   if (view !== 'flash' && typeof Speech !== 'undefined') Speech.cancel();   // フラッシュ離脱で読み上げ停止
   window.scrollTo(0, 0);
   if (view === 'home') renderHome();

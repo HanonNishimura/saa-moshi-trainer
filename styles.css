@@ -283,3 +283,34 @@ textarea.conf-memo{width:100%;margin-top:8px;background:var(--bg);color:var(--in
   .exam-expl{grid-area:expl}
   .exam-q .qtext{margin:0;padding:14px;background:var(--bg2);border:1px solid var(--line);border-radius:12px;max-height:calc(100vh - 160px);overflow:auto}
 }
+
+/* ===== PC UI フェーズA：左サイドナビ化＋全般（>=1000px。スマホは不変） ===== */
+@media (min-width:1000px){
+  :root{ --side:224px; }
+  /* 下部タブ用の余白を左サイドバー用に切替 */
+  body{ padding-bottom:0; padding-left:var(--side); }
+  /* 下部固定タブバー → 左サイド固定（縦・ラベル横） */
+  nav.tabbar{
+    top:0; bottom:0; right:auto; width:var(--side);
+    flex-direction:column; justify-content:flex-start; align-items:stretch; gap:4px;
+    border-top:0; border-right:1px solid var(--line);
+    padding:14px 10px calc(14px + env(safe-area-inset-bottom));
+    overflow-y:auto;
+  }
+  nav.tabbar button{
+    flex:0 0 auto; width:100%;
+    flex-direction:row; justify-content:flex-start; gap:12px;
+    min-height:48px; padding:11px 14px; font-size:14px;
+    border-radius:10px; cursor:pointer; transition:background .12s;
+  }
+  nav.tabbar button .ic{ font-size:20px; width:24px; text-align:center; }
+  nav.tabbar button:hover{ background:var(--bg2); }
+  nav.tabbar button.active{ background:var(--card2); color:var(--brand); }
+  /* ヘッダー・本文は本体側の padding-left で自動的に右へ寄る */
+  header.top{ padding-left:18px; }
+  .wrap{ max-width:760px; padding:20px 24px; }
+  /* PCはポインタ操作：押せる要素にホバーフィードバック */
+  .btn{ cursor:pointer; }
+  .btn:hover{ filter:brightness(1.08); }
+  .card-clickable:hover, .deck-chip:hover, .iconbtn:hover{ filter:brightness(1.08); }
+}
