@@ -413,12 +413,14 @@ function homeHwCard() {
   var scope = ActiveDeck.deckId() ? ActiveDeck.label() : '全デッキ横断';
   var st = reviewStats(ActiveDeck.deckId());
   var rl = st.total ? '<div class="small" style="margin:0 0 8px">📚 誤答の見直し 残り <b>' + (st.total - st.mastered) + '</b> / ' + st.total + '（🔴思い込み残 ' + st.omoiRemain + '）</div>' : '';
+  var todayLog = HwLog.get(ymdLocal(new Date()));
+  var todayPctHtml = todayLog ? '<span class="hw-pct">本日 ' + todayLog.pct + '%</span>' : '';
   return '<div class="card" style="border-color:#1d4ed8">' +
     '<div class="row"><b class="grow">📅 今日の宿題</b>' +
     '<button class="btn ghost sm" data-act="syncNow">🔄 同期</button>' +
     '<button class="btn ghost sm" data-act="logout">ログアウト</button></div>' +
     '<p class="small muted" style="margin:6px 0">その日の弱点・思い込み・復習タイミングから自動出題。対象: <b>' + esc(scope) + '</b></p>' +
-    '<div class="hw-total" style="margin:6px 0"><span class="hw-total-num">1日 全 ' + HW_N + ' 問</span></div>' + rl +
+    '<div class="hw-total" style="margin:6px 0"><span class="hw-total-num">1日 全 ' + HW_N + ' 問</span>' + todayPctHtml + '</div>' + rl +
     '<button class="btn primary block" data-act="startHw">▶ 今日の宿題（TODO）を開く</button></div>';
 }
 /* ⚡ サクッと集中カード（最重要から数問だけ・短時間）。誤答プールがあるときだけ表示 */
@@ -453,6 +455,42 @@ var HwStreak = {
     LS.set('saa.hwStreak', s); return s.n;
   }
 };
+/* 当日の宿題の進捗率を日付ごとに記録（端末内・直近60日保持）。グラフ/履歴表示用 */
+var HwLog = {
+  all: function () { return LS.get('saa.hwlog', {}); },
+  record: function (done, total) {
+    if (!total) return;
+    var t = ymdLocal(new Date()), m = HwLog.all();
+    var p = Math.round(done / total * 100);
+    var cur = m[t];
+    // その日の最大到達進捗を残す（再取得などで total が変わっても達成側を優先）
+    if (!cur || done > (cur.done || 0) || p > (cur.pct || 0)) {
+      m[t] = { done: done, total: total, pct: p, at: Date.now() };
+      var keys = Object.keys(m).sort(); while (keys.length > 60) { delete m[keys.shift()]; }
+      LS.set('saa.hwlog', m);
+    }
+  },
+  get: function (date) { return HwLog.all()[date] || null; },
+  recent: function (n) {
+    var m = HwLog.all();
+    return Object.keys(m).sort().slice(-(n || 7)).map(function (d) { return Object.assign({ date: d }, m[d]); });
+  }
+};
+/* 直近の宿題達成率の履歴カード（％の推移を棒で表示） */
+function hwHistoryCard() {
+  var rec = HwLog.recent(7);
+  if (!rec.length) return '';
+  var avg = Math.round(rec.reduce(function (a, b) { return a + (b.pct || 0); }, 0) / rec.length);
+  var bars = rec.map(function (r) {
+    var col = r.pct >= 100 ? 'var(--ok)' : r.pct >= 50 ? 'var(--warn)' : 'var(--bad)';
+    return '<div class="hwh-col"><div class="hwh-bar"><i style="height:' + Math.max(4, r.pct) + '%;background:' + col + '"></i></div>' +
+      '<div class="hwh-pct">' + r.pct + '%</div>' +
+      '<div class="hwh-d">' + esc(jpDateLabel(r.date).replace(/\(.\)/, '')) + '</div></div>';
+  }).join('');
+  return '<div class="card"><div class="row"><b class="grow">📈 宿題の達成率（直近' + rec.length + '日）</b>' +
+    '<span class="small muted">平均 ' + avg + '%</span></div>' +
+    '<div class="hwh-wrap">' + bars + '</div></div>';
+}
 function startHomeworkSession(hw, subset) {
   state.lastHw = hw;
   var src = (subset && subset.length) ? subset : (hw.items || []);
@@ -647,6 +685,8 @@ function renderHomework() {
     var items = hw.items;
     var doneF = items.map(function (it) { var s = SRS.get(it.deckId, it.num); return !!(s && s.lastDay === today); });
     var done = doneF.filter(Boolean).length, total = items.length, remain = total - done;
+    var prog = pct(done, total);
+    HwLog.record(done, total);   // 当日の進捗率を記録（端末内・履歴用）
     var streak = HwStreak.get().n;
     var rows = '';
     items.forEach(function (it, i) {
@@ -663,15 +703,17 @@ function renderHomework() {
       '<button class="btn ghost sm" data-act="startHw">↻ 再取得</button></div>' +
       '<div class="small muted" style="margin-top:4px">' + esc(hw.date) + ' ・ 本番まで' + (hw.daysLeft != null ? hw.daysLeft : '-') + '日 ・ 🔥連続' + streak + '日</div>' +
       '<div class="hw-total" style="margin-top:8px"><span class="hw-total-num">全 ' + total + ' 問</span>' +
-      '<span class="small">　残り <b>' + remain + '</b> 問 ／ 完了 ' + done + ' 問</span></div>' +
-      '<div class="bar" style="margin-top:8px"><i style="width:' + pct(done, total) + '%"></i></div>' +
-      (remain === 0 ? '<div class="small okc" style="margin-top:6px">🎉 今日の宿題は全部できた！</div>' : '') +
+      '<span class="hw-pct">進捗 ' + prog + '%</span>' +
+      '<span class="small">　完了 ' + done + ' ／ 残り <b>' + remain + '</b> 問</span></div>' +
+      '<div class="bar" style="margin-top:8px"><i style="width:' + prog + '%"></i></div>' +
+      (remain === 0 ? '<div class="small okc" style="margin-top:6px">🎉 今日の宿題は全部できた！（達成率100%）</div>' : '') +
       '<div class="btnrow" style="margin-top:10px">' +
       (remain > 0 ? '<button class="btn primary grow" data-act="hwAll">▶ 残り' + remain + '問をまとめて解く</button>' : '') +
       '<button class="btn grow" data-act="hwPrint">🖨 宿題をプリント（全' + total + '問）</button>' +
       '</div>' +
       '</div>' +
       '<div class="card">' + rows + '</div>' +
+      hwHistoryCard() +
       '<div class="card"><p class="small muted">AI家庭教師で深掘りするには下をコピー。</p>' +
       '<button class="btn block" data-act="hwTutorCopy">📋 今日の宿題を教師プロンプトでやる（コピー）</button></div>';
   } else {
@@ -683,8 +725,11 @@ function renderHomework() {
 }
 function renderHwResult() {
   var r = state.lastHwResult || { total: 0, correct: 0 }, hw = state.lastHw || {};
+  var rpct = pct(r.correct, r.total);
+  var todayLog = HwLog.get(ymdLocal(new Date()));
   app.innerHTML = '<div class="card" style="text-align:center"><div class="small muted">今日の宿題 ' + esc(hw.date || '') + '</div>' +
-    '<div class="bigpct">' + r.correct + ' / ' + r.total + '</div>' +
+    '<div class="bigpct">' + rpct + '%</div>' +
+    '<div class="muted">正解 ' + r.correct + ' / ' + r.total + '問' + (todayLog ? ' ・ 本日の進捗 ' + todayLog.pct + '%' : '') + '</div>' +
     '<div class="muted">本番まで ' + (hw.daysLeft != null ? hw.daysLeft : '-') + '日</div></div>' +
     '<div class="card"><p class="small muted">この宿題をAI家庭教師でさらに深掘りできます。下をコピーして、Claudeの対話学習プロンプトに続けて貼ってください。</p>' +
     '<button class="btn primary block" data-act="hwTutorCopy">📋 今日の宿題を教師プロンプトでやる（コピー）</button></div>' +

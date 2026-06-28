@@ -236,6 +236,15 @@ textarea.conf-memo{width:100%;margin-top:8px;background:var(--bg);color:var(--in
 /* 今日の宿題 合計問題数の強調表示 */
 .hw-total{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
 .hw-total-num{font-size:18px;font-weight:800;color:var(--brand);background:#0b2236;border:1px solid #1d4ed8;border-radius:10px;padding:3px 12px}
+.hw-pct{font-size:15px;font-weight:800;color:#86efac;background:#0c2a18;border:1px solid #14532d;border-radius:10px;padding:3px 10px}
+
+/* 宿題の達成率 履歴（棒グラフ） */
+.hwh-wrap{display:flex;gap:8px;align-items:flex-end;margin-top:10px;justify-content:space-between}
+.hwh-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}
+.hwh-bar{width:100%;max-width:34px;height:64px;background:var(--bg2);border:1px solid var(--line);border-radius:6px;display:flex;align-items:flex-end;overflow:hidden}
+.hwh-bar i{display:block;width:100%;border-radius:0 0 5px 5px}
+.hwh-pct{font-size:11px;font-weight:700;color:var(--ink)}
+.hwh-d{font-size:10px;color:var(--muted);white-space:nowrap}
 
 /* PC幅（>=1000px）の2カラム出題：左に問題・右上に選択肢・右下に解答/解説 */
 .exam-col-label{margin:0 0 6px;font-weight:700}
