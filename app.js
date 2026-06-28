@@ -423,6 +423,70 @@ function homeHwCard() {
     '<div class="hw-total" style="margin:6px 0"><span class="hw-total-num">1日 全 ' + HW_N + ' 問</span>' + todayPctHtml + '</div>' + rl +
     '<button class="btn primary block" data-act="startHw">▶ 今日の宿題（TODO）を開く</button></div>';
 }
+/* 🎯 次の一手：状況から最適な1アクションを提示（迷う時間をなくす） */
+function nextActionCard() {
+  var st = reviewStats(ActiveDeck.deckId());
+  if (!st.total) return '';
+  var remain = st.total - st.mastered;
+  var icon, title, desc, act, n, label;
+  if (st.omoiRemain > 0) {
+    icon = '🔴'; title = 'まず思い込みから'; desc = '自信があって外した最重要が ' + st.omoiRemain + ' 問。ここが一番伸びる。';
+    act = 'quickFocus'; n = 3; label = '最重要を3問やる';
+  } else if (remain > 0) {
+    icon = '🎯'; title = '弱点を1つ減らそう'; desc = '未克服が ' + remain + ' 問。5問だけサクッと。';
+    act = 'quickFocus'; n = 5; label = 'サクッと5問やる';
+  } else {
+    icon = '🎉'; title = '弱点は克服済み！'; desc = '維持のため、めくって復習を。';
+    act = 'startFlash'; n = 0; label = 'ながら復習で維持';
+  }
+  return '<div class="card next-card">' +
+    '<div class="row"><span class="next-ic">' + icon + '</span>' +
+    '<div class="grow"><b style="font-size:17px">今これをやろう</b>' +
+    '<div class="small" style="color:#e9d5ff">' + esc(title) + '</div></div></div>' +
+    '<p class="small" style="margin:8px 0">' + esc(desc) + '</p>' +
+    '<button class="btn primary block" data-act="' + act + '"' + (act === 'quickFocus' ? ' data-n="' + n + '"' : '') + '>▶ ' + esc(label) + '</button>' +
+    '</div>';
+}
+
+/* 🔥 学習カレンダー：日々の学習量をヒートマップ＋連続日数で見える化 */
+function studyDayCount(scopeId, dateStr) { return reviewedCountOn(scopeId, dateStr); }
+function studyStreak(scopeId) {
+  var d = new Date(); d.setHours(0, 0, 0, 0);
+  var n = 0;
+  // 今日が0でも昨日まで続いていれば継続中とみなす（今日分の猶予）
+  if (studyDayCount(scopeId, ymdLocal(d)) === 0) d.setDate(d.getDate() - 1);
+  while (studyDayCount(scopeId, ymdLocal(d)) > 0) { n++; d.setDate(d.getDate() - 1); }
+  return n;
+}
+function studyCalendarCard() {
+  var scopeId = ActiveDeck.deckId();
+  var base = new Date(); base.setHours(0, 0, 0, 0);
+  var todayStr = ymdLocal(base);
+  var sun = new Date(base); sun.setDate(base.getDate() - base.getDay());   // 今週の日曜
+  var start = new Date(sun); start.setDate(sun.getDate() - 7 * 4);          // 5週間前の日曜
+  var WK = ['日', '月', '火', '水', '木', '金', '土'];
+  var headRow = WK.map(function (w) { return '<div class="cal-wd">' + w + '</div>'; }).join('');
+  var cells = '', monthDays = 0, total = 0, anyData = false;
+  for (var i = 0; i < 35; i++) {
+    var dt = new Date(start); dt.setDate(start.getDate() + i);
+    var ds = ymdLocal(dt);
+    var future = dt > base;
+    var cnt = future ? 0 : studyDayCount(scopeId, ds);
+    if (cnt > 0) { anyData = true; total += cnt; if (dt.getMonth() === base.getMonth() && dt.getFullYear() === base.getFullYear()) monthDays++; }
+    var lvl = future ? 'f' : (cnt === 0 ? '0' : (cnt >= 8 ? '3' : (cnt >= 4 ? '2' : '1')));
+    var isToday = (ds === todayStr);
+    cells += '<div class="cal-cell l' + lvl + (isToday ? ' today' : '') + '" title="' + ds + '：' + cnt + '問"><span>' + dt.getDate() + '</span></div>';
+  }
+  var streak = studyStreak(scopeId);
+  return '<div class="card cal-card">' +
+    '<div class="row"><b class="grow">🔥 学習カレンダー</b>' +
+    '<span class="small muted">連続 <b style="color:#fdba74">' + streak + '</b> 日</span></div>' +
+    '<div class="small muted" style="margin:4px 0 8px">直近5週間 ・ 今月 ' + monthDays + ' 日学習' + (anyData ? '' : '（まだ記録なし。今日から！）') + '</div>' +
+    '<div class="cal-grid">' + headRow + cells + '</div>' +
+    '<div class="cal-legend small muted">少 <span class="cal-cell l0"></span><span class="cal-cell l1"></span><span class="cal-cell l2"></span><span class="cal-cell l3"></span> 多</div>' +
+    '</div>';
+}
+
 /* ⚡ サクッと集中カード（最重要から数問だけ・短時間）。誤答プールがあるときだけ表示 */
 function quickFocusCard() {
   var st = reviewStats(ActiveDeck.deckId());
@@ -476,6 +540,35 @@ var HwLog = {
     return Object.keys(m).sort().slice(-(n || 7)).map(function (d) { return Object.assign({ date: d }, m[d]); });
   }
 };
+/* 🔊 読み上げ（Web Speech API・ゼロ依存）。ながら学習・耳復習用 */
+var Speech = {
+  ok: function () { return typeof window !== 'undefined' && 'speechSynthesis' in window; },
+  on: function () { return LS.get('saa.tts', false); },
+  setOn: function (v) { LS.set('saa.tts', !!v); if (!v) Speech.cancel(); },
+  speak: function (text) {
+    if (!Speech.ok() || !text) return;
+    try {
+      window.speechSynthesis.cancel();
+      var u = new SpeechSynthesisUtterance(String(text).slice(0, 1200));
+      u.lang = 'ja-JP'; u.rate = 1.05; u.pitch = 1;
+      window.speechSynthesis.speak(u);
+    } catch (e) {}
+  },
+  cancel: function () { if (Speech.ok()) { try { window.speechSynthesis.cancel(); } catch (e) {} } }
+};
+/* 問題（＋選択肢）を読み上げ用テキストに */
+function ttsQuestionText(q) {
+  var L = [String(q.text || '').replace(/\s+/g, ' ')];
+  (q.choices || []).forEach(function (c, i) { L.push((FLASH_LETTERS[i] || (i + 1)) + '、' + c); });
+  return L.join('。 ');
+}
+function ttsAnswerText(q) {
+  var cor = (q.correct || []).map(function (n) { return FLASH_LETTERS[n - 1] || n; }).join('、');
+  var t = '正解は、' + cor + '。';
+  if (q.correctTheme) t += ' ポイント、' + q.correctTheme + '。';
+  return t;
+}
+
 /* 直近の宿題達成率の履歴カード（％の推移を棒で表示） */
 function hwHistoryCard() {
   var rec = HwLog.recent(7);
@@ -642,11 +735,15 @@ function renderFlash() {
   var chs = (q.choices || []).map(function (ch, i) {
     return '<div class="flash-ch"><span class="let">' + (FLASH_LETTERS[i] || (i + 1)) + '</span><span>' + esc(ch) + '</span></div>';
   }).join('');
+  var ttsBtn = Speech.ok()
+    ? '<button class="btn ' + (Speech.on() ? 'primary' : 'ghost') + ' sm" data-act="flashTts" title="自動読み上げ">🔊' + (Speech.on() ? ' ON' : '') + '</button>'
+    : '';
   var head =
     '<div class="row" style="align-items:center">' +
     '<b class="grow">🎮 ながら復習</b>' +
     '<span class="small muted">めくった ' + fl.seen + ' 枚</span>' +
-    '<button class="btn ghost sm" data-act="home" style="margin-left:8px">終了</button></div>';
+    ttsBtn +
+    '<button class="btn ghost sm" data-act="home" style="margin-left:6px">終了</button></div>';
   var pills =
     '<div class="row wrap" style="gap:6px;margin:8px 0 4px">' +
     '<span class="pill id">🆔 ' + esc(idl) + '</span>' +
@@ -659,7 +756,9 @@ function renderFlash() {
       '<div class="qtext">' + esc(q.text) + '</div>' +
       '<div class="flash-choices">' + chs + '</div>' +
       '<div class="flash-hint">タップ／スワイプで答えを見る 👀</div></div>' +
-      '<div class="sticky-bottom"><button class="btn primary grow" data-act="flashReveal">👀 答えを見る</button></div>';
+      '<div class="sticky-bottom">' +
+      (Speech.ok() ? '<button class="btn" data-act="flashSpeak">🔊 読む</button>' : '') +
+      '<button class="btn primary grow" data-act="flashReveal">👀 答えを見る</button></div>';
   } else {
     var cor = (q.correct || []).map(function (n) { return FLASH_LETTERS[n - 1] || n; }).join('');
     var theme = (q.correctTheme || '').trim();
@@ -677,6 +776,7 @@ function renderFlash() {
   }
   app.innerHTML = head + body;
   decorateGlossary();
+  if (Speech.on()) Speech.speak(fl.revealed ? ttsAnswerText(q) : ttsQuestionText(q));   // 自動読み上げ
 }
 function renderHomework() {
   var today = ymdLocal(new Date()), hw = state.lastHw;
@@ -1266,6 +1366,7 @@ function show(view, arg) {
   state.view = view;
   if (NAV_MAP[view]) setNav(NAV_MAP[view]);
   document.body.classList.toggle('exam-wide', view === 'examRun');  // PC幅の2カラム出題
+  if (view !== 'flash' && typeof Speech !== 'undefined') Speech.cancel();   // フラッシュ離脱で読み上げ停止
   window.scrollTo(0, 0);
   if (view === 'home') renderHome();
   else if (view === 'import') renderImport();
@@ -1350,8 +1451,10 @@ function showGloss(term) {
 /* ---------- ホーム ---------- */
 function renderHome() {
   var decks = Store.decks();
-  var html = activeDeckCard(decks);
+  var html = nextActionCard();   // 🎯 今これをやろう（迷わない次の一手）
+  html += activeDeckCard(decks);
   html += quickFocusCard();   // ⚡ サクッと集中（最重要から数問だけ）
+  html += studyCalendarCard();   // 🔥 学習カレンダー（継続の見える化）
   html += scheduleHomeCard();
   if (API.available) html += homeHwCard();   // サーバー接続時のみ「今日の宿題」
   // 中断した試験の再開バナー
@@ -2510,7 +2613,9 @@ var handlers = {
   flashGood: function () { flashAdvance(true); },
   flashBad: function () { flashAdvance(false); },
   flashNext: function () { flashAdvance(null); },
-  flashRestart: function () { startFlash(); }
+  flashRestart: function () { startFlash(); },
+  flashTts: function () { Speech.setOn(!Speech.on()); renderFlash(); },
+  flashSpeak: function () { var c = flashCur(); if (c) Speech.speak(state.flash.revealed ? ttsAnswerText(c.q) : ttsQuestionText(c.q)); }
 };
 function doRestore(fileList) {
   var f = (fileList || [])[0]; if (!f) return;

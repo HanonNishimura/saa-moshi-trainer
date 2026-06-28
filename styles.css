@@ -218,6 +218,28 @@ textarea.conf-memo{width:100%;margin-top:8px;background:var(--bg);color:var(--in
 .focus-card{border-color:#a16207;background:linear-gradient(180deg,#2a2009,#1b2336)}
 .focus-card .btn.primary{background:linear-gradient(180deg,#f59e0b,#d97706);border-color:#b45309;color:#1a1206}
 
+/* 🎯 次の一手カード */
+.next-card{border-color:#7c3aed;background:linear-gradient(180deg,#241a44,#17233a)}
+.next-card .next-ic{font-size:30px;line-height:1;margin-right:6px}
+.next-card .btn.primary{background:linear-gradient(180deg,#a78bfa,#7c3aed);border-color:#6d28d9;color:#160b2e}
+
+/* 🔥 学習カレンダー */
+.cal-card{border-color:#b45309}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.cal-wd{text-align:center;font-size:10px;color:var(--muted);padding-bottom:2px}
+.cal-cell{aspect-ratio:1;border-radius:5px;background:var(--bg2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+.cal-cell span{font-size:10px;color:var(--muted)}
+.cal-cell.l0{background:#16233a}
+.cal-cell.l1{background:#1e3a2a;border-color:#14532d}
+.cal-cell.l2{background:#15803d;border-color:#16a34a}
+.cal-cell.l3{background:#22c55e;border-color:#4ade80}
+.cal-cell.l1 span,.cal-cell.l2 span,.cal-cell.l3 span{color:#04130a;font-weight:700}
+.cal-cell.lf{background:transparent;border-color:transparent}
+.cal-cell.lf span{color:transparent}
+.cal-cell.today{outline:2px solid var(--brand);outline-offset:-2px}
+.cal-legend{display:flex;align-items:center;gap:4px;margin-top:8px;justify-content:flex-end}
+.cal-legend .cal-cell{width:14px;height:14px;aspect-ratio:auto}
+
 /* 🎮 ながら復習（フラッシュカード） */
 .flash-card{border-color:#7c3aed;background:linear-gradient(180deg,#1e1635,#1b2336);cursor:pointer;min-height:200px}
 .flash-card.revealed{cursor:default}
