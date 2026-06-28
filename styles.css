@@ -314,3 +314,14 @@ textarea.conf-memo{width:100%;margin-top:8px;background:var(--bg);color:var(--in
   .btn:hover{ filter:brightness(1.08); }
   .card-clickable:hover, .deck-chip:hover, .iconbtn:hover{ filter:brightness(1.08); }
 }
+
+/* ===== PC UI フェーズB：ホームを2カラム(masonry)化（>=1000px。スマホは不変） ===== */
+@media (min-width:1000px){
+  /* ホームだけ横幅を広げてカードを2列に流す（高さの異なるカードに強いcolumn方式） */
+  body[data-view="home"] .wrap{ max-width:1120px; }
+  body[data-view="home"] #app{ column-count:2; column-gap:18px; }
+  body[data-view="home"] #app > .card{
+    break-inside:avoid; -webkit-column-break-inside:avoid;
+    margin:0 0 16px; display:inline-block; width:100%;
+  }
+}
