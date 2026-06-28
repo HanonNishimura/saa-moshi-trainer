@@ -1303,6 +1303,75 @@ function genreStats(deckId) {
   }
   return m;
 }
+/* ジャンル別の弱点を算出：取込データ(srcVerdict×・自信度◎○=思い込み・SRS定着)＋アプリ内正答率を統合。
+ * scopeId 省略/空なら全デッキ横断（reviewPoolと同じスコープ規約）。 */
+function genreWeakness(scopeId) {
+  var ids = scopeId ? [scopeId] : Store.deckIds();
+  var m = {};
+  ids.forEach(function (id) {
+    var d = Store.getDeck(id); if (!d) return;
+    var qs = qStats(id);   // アプリ内の問題別正答率（試験＋練習）
+    (d.questions || []).forEach(function (q) {
+      var k = q.genreCode || q.genre || '?';
+      var g = m[k] || (m[k] = { code: k, name: q.genre || k, total: 0, weak: 0, remain: 0, omoi: 0, mastered: 0, seen: 0, correct: 0 });
+      g.total++;
+      var s = SRS.get(id, q.num) || {}, c = (CONF.get(id, q.num) || {}).c || '';
+      var omoi = (c === '◎' || c === '○');
+      var mastered = (s.box || 0) >= 3;
+      var st = qs[q.num];
+      if (st) { g.seen += st.seen; g.correct += st.correct; }
+      // 弱点候補：取込で×（元々間違い） or アプリ内で正答率60%未満
+      var inAppWrong = !!(st && st.seen > 0 && (st.correct / st.seen) < 0.6);
+      var srcWrong = (q.srcVerdict === '×' && q.srcAnswer);
+      if (srcWrong || inAppWrong) {
+        g.weak++;
+        if (mastered) g.mastered++; else { g.remain++; if (omoi) g.omoi++; }
+      }
+    });
+  });
+  var arr = Object.keys(m).map(function (k) {
+    var g = m[k];
+    g.acc = g.seen ? Math.round(g.correct / g.seen * 100) : null;
+    // 弱点スコア：未克服の弱点率（ジャンル規模で正規化）＋思い込みを重み付け
+    g.score = g.total ? (g.remain + g.omoi * 0.5) / g.total : 0;
+    return g;
+  }).filter(function (g) { return g.weak > 0; });
+  arr.sort(function (a, b) { return b.score - a.score || b.remain - a.remain; });
+  return arr;
+}
+/* 弱点画面用：ジャンル別弱点テーブルのカード */
+function genreWeakCardHtml(scopeId) {
+  var arr = genreWeakness(scopeId);
+  if (!arr.length) return '';
+  var rows = arr.map(function (g) {
+    var rate = g.total ? Math.round(g.remain / g.total * 100) : 0;
+    var col = g.remain === 0 ? 'var(--ok)' : (g.omoi > 0 ? 'var(--bad)' : 'var(--warn)');
+    return '<tr><td>' + esc(g.name) + '</td>' +
+      '<td class="rt">' + g.remain + ' / ' + g.weak + '</td>' +
+      '<td class="rt">' + (g.omoi ? '🔴 ' + g.omoi : '–') + '</td>' +
+      '<td style="width:28%"><div class="meter"><i style="width:' + Math.max(3, rate) + '%;background:' + col + '"></i></div></td>' +
+      '<td class="rt">' + (g.acc != null ? g.acc + '%' : '–') + '</td></tr>';
+  }).join('');
+  return '<div class="card"><h3>🎯 ジャンル別の弱点</h3>' +
+    '<p class="small muted">取込データ（元々×・思い込み・SRS定着）＋アプリ内正答率を統合して算出。残=未克服／弱点数、🔴=思い込み（自信あり×）、率=アプリ内正答率。</p>' +
+    '<table class="tbl"><tr><th>ジャンル</th><th class="rt">残/弱点</th><th class="rt">思込</th><th></th><th class="rt">正答率</th></tr>' + rows + '</table>' +
+    '<button class="btn primary block" data-act="quickFocus" data-n="5" style="margin-top:10px">▶ 弱点から5問やる</button></div>';
+}
+/* ホーム用：弱点ジャンルTOPサマリ */
+function weakSummaryCard() {
+  var top = genreWeakness(ActiveDeck.deckId()).filter(function (g) { return g.remain > 0; }).slice(0, 3);
+  if (!top.length) return '';
+  var items = top.map(function (g) {
+    return '<div class="row" style="gap:8px;margin:5px 0">' +
+      '<span class="grow">' + (g.omoi ? '🔴 ' : '') + esc(g.name) + '</span>' +
+      '<span class="small muted">残 <b style="color:#fdba74">' + g.remain + '</b> 問' + (g.acc != null ? ' ・ 正答' + g.acc + '%' : '') + '</span></div>';
+  }).join('');
+  var did = ActiveDeck.deckId();
+  return '<div class="card"><div class="row"><b class="grow">🎯 弱点ジャンル TOP' + top.length + '</b>' +
+    (did ? '<button class="btn ghost sm" data-act="openStats" data-id="' + esc(did) + '">詳しく</button>' : '') + '</div>' +
+    items +
+    '<button class="btn primary block" data-act="quickFocus" data-n="5" style="margin-top:8px">▶ 弱点から5問やる</button></div>';
+}
 function deckGenres(deck) {
   var m = {};
   deck.questions.forEach(function (q) {
@@ -1456,6 +1525,7 @@ function renderHome() {
   var html = nextActionCard();   // 🎯 今これをやろう（迷わない次の一手）
   html += activeDeckCard(decks);
   html += quickFocusCard();   // ⚡ サクッと集中（最重要から数問だけ）
+  html += weakSummaryCard();   // 🎯 弱点ジャンルTOP（正答率/取込データから算出）
   html += studyCalendarCard();   // 🔥 学習カレンダー（継続の見える化）
   html += scheduleHomeCard();
   if (API.available) html += homeHwCard();   // サーバー接続時のみ「今日の宿題」
@@ -2249,10 +2319,13 @@ function renderStatsDeck(deckId) {
   var backLabel = ActiveDeck.deckId() === deckId ? '← ホーム' : '← 戻る';
   var at = Store.attempts(deckId);
   if (!at.length && PStats.count(deckId) === 0) {
+    var gwEmpty = genreWeakCardHtml(deckId);
     app.innerHTML = '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="' + backTo + '">' + backLabel + '</button>' +
-      '<h3 class="grow" style="margin:0 0 0 8px">' + esc(deckLabel(d.name)) + '</h3></div>' +
-      '<div class="empty">まだ記録がありません。<br>試験モードや練習モードをやると、ここに弱点が出ます。<br>' +
-      '<button class="btn primary" data-act="startExam" data-id="' + esc(deckId) + '" style="margin-top:12px">📝 試験を始める</button></div></div>' +
+      '<h3 class="grow" style="margin:0 0 0 8px">' + esc(deckLabel(d.name)) + ' 弱点</h3></div>' +
+      '<div class="empty">アプリ内の受験記録はまだありません。' +
+      (gwEmpty ? '<br>下は<b>取込データ（元々×・思い込み）</b>から算出した弱点です。試験/練習をやるとアプリ内正答率も加味されます。' : '<br>試験モードや練習モードをやると、ここに弱点が出ます。') +
+      '<br><button class="btn primary" data-act="startExam" data-id="' + esc(deckId) + '" style="margin-top:12px">📝 試験を始める</button></div></div>' +
+      gwEmpty +
       confCardHtml(deckId);
     return;
   }
@@ -2308,6 +2381,7 @@ function renderStatsDeck(deckId) {
     '<div class="b"><b>' + at.length + '</b><span class="small muted">受験回数</span></div>' +
     '<div class="b"><b>' + lastP + '%</b><span class="small muted">直近</span></div>' +
     '<div class="b"><b>' + best + '%</b><span class="small muted">ベスト</span></div></div></div>' +
+    genreWeakCardHtml(deckId) +
     trendCard +
     '<div class="card"><h3>ジャンル別 正答率（弱い順）</h3><p class="small muted">目標72%までに必要な追加正解数の目安も表示します。</p><table class="tbl"><tr><th>ジャンル</th><th class="rt">正答</th><th></th><th class="rt">率</th><th class="rt">72%まで</th></tr>' + grows + '</table></div>' +
     '<div class="card"><h3>よく間違える問題</h3>' + (mrows || '<div class="empty small">なし</div>') + '</div>' +
