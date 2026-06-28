@@ -3,7 +3,7 @@
  * 問題データはユーザーがインポートして端末内(localStorage)に保存されるため、
  * このSWはネットワークへ問題を一切送らない。
  */
-const CACHE = 'saa-moshi-v15';
+const CACHE = 'saa-moshi-v24';
 const ASSETS = [
   './',
   './index.html',
@@ -39,6 +39,7 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== location.origin) return; // 外部は触らない
+  if (url.pathname.indexOf('/api/') === 0) return; // API は常にネットワーク（キャッシュしない）
   e.respondWith(
     caches.match(req).then((cached) => {
       if (cached) return cached;

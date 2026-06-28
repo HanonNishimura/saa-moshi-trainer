@@ -28,6 +28,7 @@ header.top .logo{font-weight:800;font-size:18px;letter-spacing:.02em}
 header.top .logo span{color:var(--brand)}
 header.top .sp{flex:1}
 .iconbtn{min-width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font-size:14px;padding:0 10px}
+.deck-chip{display:inline-flex;align-items:center;max-width:42vw;min-height:34px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--ink);font-size:12px;font-weight:700;padding:5px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 
 /* bottom nav */
 nav.tabbar{
@@ -45,6 +46,7 @@ nav.tabbar button.active{color:var(--brand)}
 
 /* cards & buttons */
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin:12px 0}
+.active-deck-card{border-color:#1d4ed8;background:linear-gradient(180deg,#1e293b,#17233a)}
 .card h3{margin:.1em 0 .5em}
 .muted{color:var(--muted)}
 .small{font-size:13px}
@@ -74,6 +76,7 @@ label.fld .lab{font-size:13px;color:var(--muted);margin-bottom:4px;display:block
 .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:var(--bg2);color:var(--muted)}
 .pill.g{border-color:#1d4ed8;color:#93c5fd;background:#0b1f3a}
 .pill.hi{border-color:#7c2d12;color:#fdba74;background:#2a160b}
+.pill.ok{border-color:#14532d;color:#86efac;background:#0c2a18}
 .tag{font-size:11px;padding:1px 7px;border-radius:6px;background:#0b1f3a;color:#93c5fd;border:1px solid #1d4ed8}
 
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
@@ -174,3 +177,62 @@ table.tbl th{color:var(--muted);font-weight:600;font-size:12px}
 .spacer{height:8px}
 hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0}
 code.k{background:#0b1426;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:13px}
+/* 学習スケジュール */
+.schedule-card{border-color:#0f766e;background:linear-gradient(180deg,#1e293b,#102f36)}
+.schedule-hero{border-color:#0f766e}
+.schedule-list{display:flex;flex-direction:column;gap:10px;margin:12px 0}
+.schedule-row{display:grid;grid-template-columns:96px 1fr;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+.schedule-row.today{border-color:var(--brand);background:#102a3d}
+.schedule-row.done{opacity:.72}
+.schedule-date{display:flex;flex-direction:column;gap:2px;color:#dbeafe}
+.schedule-date span{font-size:12px;color:var(--muted)}
+.schedule-main{min-width:0}
+.schedule-progress{margin:6px 0}
+@media (max-width:520px){
+  .schedule-row{grid-template-columns:1fr}
+  .schedule-date{flex-direction:row;align-items:baseline;gap:8px}
+}
+/* 自信度＋思ったことメモ */
+.conf-wrap{margin:12px 0 4px;padding:10px;border:1px dashed var(--line);border-radius:12px;background:var(--bg2)}
+.conf-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.conf-lab{font-size:12px;color:var(--muted);flex:0 0 auto}
+.conf-sel{display:flex;gap:6px;flex-wrap:wrap}
+.conf-btn{min-width:44px;min-height:40px;border-radius:10px;border:1px solid var(--line);background:var(--card2);color:var(--ink);font-size:18px;font-weight:700;cursor:pointer;padding:0 8px}
+.conf-btn:active{transform:translateY(1px)}
+.conf-btn.clr{font-size:12px;font-weight:600;color:var(--muted)}
+.conf-btn.on{border-color:transparent;color:#04263a}
+.conf-btn.on.c0{background:#22c55e}            /* ◎ 確信 */
+.conf-btn.on.c1{background:#86efac}            /* ○ たぶん */
+.conf-btn.on.c2{background:var(--warn);color:#1a1206} /* △ 勘 */
+.conf-btn.on.c3{background:var(--bad);color:#fff}     /* × わからない */
+.conf-btn.clr.on{background:var(--card2);color:var(--ink);border-color:var(--line)}
+textarea.conf-memo{width:100%;margin-top:8px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:14px;font-family:inherit;resize:vertical;min-height:46px}
+/* 今日の宿題TODO */
+.hw-item{display:flex;align-items:center;gap:10px;text-align:left;justify-content:flex-start;margin:6px 0}
+.hw-item .hw-mk{flex:0 0 24px;font-size:18px}
+.hw-item .hw-body{line-height:1.45}
+.hw-item.done{opacity:.6}
+.hw-item.done .hw-body b{text-decoration:line-through}
+
+/* 問題ID pill（プリント・写真照合・AI管理用） */
+.pill.id{border-color:#7c3aed;color:#ddd6fe;background:#1e1635;font-weight:700;letter-spacing:.02em}
+
+/* 今日の宿題 合計問題数の強調表示 */
+.hw-total{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.hw-total-num{font-size:18px;font-weight:800;color:var(--brand);background:#0b2236;border:1px solid #1d4ed8;border-radius:10px;padding:3px 12px}
+
+/* PC幅（>=1000px）の2カラム出題：左に問題・右上に選択肢・右下に解答/解説 */
+.exam-col-label{margin:0 0 6px;font-weight:700}
+.exam-grid{display:block}
+@media (min-width:1000px){
+  body.exam-wide .wrap{max-width:1180px}
+  .exam-grid{
+    display:grid;gap:18px;align-items:start;
+    grid-template-columns:1fr 1fr;
+    grid-template-areas:"q choices" "q expl";
+  }
+  .exam-q{grid-area:q;position:sticky;top:78px}
+  .exam-choices{grid-area:choices}
+  .exam-expl{grid-area:expl}
+  .exam-q .qtext{margin:0;padding:14px;background:var(--bg2);border:1px solid var(--line);border-radius:12px;max-height:calc(100vh - 160px);overflow:auto}
+}

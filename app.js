@@ -63,15 +63,88 @@ var Store = {
       toast('保存容量が不足しています。古いデッキを削除してください');
       throw new Error('quota');
     }
+    if (Sync) Sync.pushDeck(d.id);
   },
   delDeck: function (id) {
     LS.del('saa.deck.' + id); LS.del('saa.attempts.' + id);
     LS.set('saa.deckIndex', this.deckIds().filter(function (x) { return x !== id; }));
+    if (ActiveDeck.get() === id) ActiveDeck.set('__all__');
+    if (Sync) Sync.delDeck(id);
   },
   decks: function () { return this.deckIds().map(function (id) { return Store.getDeck(id); }).filter(Boolean); },
   attempts: function (id) { return LS.get('saa.attempts.' + id, []); },
-  addAttempt: function (id, a) { var arr = this.attempts(id); a.id = Date.now(); arr.push(a); LS.set('saa.attempts.' + id, arr); return a; }
+  addAttempt: function (id, a) { var arr = this.attempts(id); a.id = Date.now(); arr.push(a); LS.set('saa.attempts.' + id, arr); if (Sync) Sync.pushAttempt(id, a); return a; }
 };
+
+/* ---------- アクティブデッキ（端末ごとのUI設定。サーバー同期しない） ---------- */
+var ActiveDeck = {
+  all: '__all__',
+  get: function () {
+    var id = LS.get('saa.activeDeck', ActiveDeck.all);
+    if (!id || (id !== ActiveDeck.all && !Store.getDeck(id))) {
+      id = ActiveDeck.all;
+      LS.set('saa.activeDeck', id);
+    }
+    return id;
+  },
+  set: function (id) {
+    if (!id || id === ActiveDeck.all || !Store.getDeck(id)) id = ActiveDeck.all;
+    LS.set('saa.activeDeck', id);
+    updateDeckChip();
+  },
+  deckId: function () {
+    var id = ActiveDeck.get();
+    return id === ActiveDeck.all ? '' : id;
+  },
+  label: function () {
+    var id = ActiveDeck.get();
+    if (id === ActiveDeck.all) return '全デッキ';
+    var d = Store.getDeck(id);
+    return d ? deckLabel(d.name) : '全デッキ';
+  },
+  preferred: function (fallback) {
+    var id = ActiveDeck.get();
+    if (id !== ActiveDeck.all && Store.getDeck(id)) return id;
+    if (fallback && Store.getDeck(fallback)) return fallback;
+    var decks = Store.decks();
+    return decks.length ? decks[0].id : '';
+  }
+};
+function activeDeckOptions(cur) {
+  var opts = '<option value="' + ActiveDeck.all + '"' + (cur === ActiveDeck.all ? ' selected' : '') + '>全デッキ</option>';
+  Store.decks().forEach(function (d) {
+    opts += '<option value="' + esc(d.id) + '"' + (d.id === cur ? ' selected' : '') + '>' + esc(deckLabel(d.name)) + '（' + d.count + '問）</option>';
+  });
+  return opts;
+}
+function activeDeckCard(decks) {
+  if (!decks.length) return '';
+  var cur = ActiveDeck.get();
+  return '<div class="card active-deck-card" id="activeDeckCard">' +
+    '<div class="row"><div class="grow"><h3 style="margin:0">📚 今使うデッキ</h3>' +
+    '<div class="small muted">試験・練習・解説・弱点・今日の宿題の既定値になります。</div></div></div>' +
+    '<label class="fld"><span class="lab">デッキ</span><select id="activeDeckSel">' + activeDeckOptions(cur) + '</select></label>' +
+    '</div>';
+}
+function initDeckChip() {
+  var top = document.querySelector('header.top');
+  if (!top || document.getElementById('activeDeckChip')) return;
+  var b = document.createElement('button');
+  b.id = 'activeDeckChip';
+  b.className = 'deck-chip';
+  b.type = 'button';
+  b.title = '今使うデッキ';
+  b.addEventListener('click', function () { show('home'); });
+  top.insertBefore(b, document.getElementById('installBtn'));
+  updateDeckChip();
+}
+function updateDeckChip() {
+  var b = document.getElementById('activeDeckChip');
+  if (!b) return;
+  if (!Store.decks().length) { b.style.display = 'none'; return; }
+  b.style.display = 'inline-flex';
+  b.textContent = '📚 ' + ActiveDeck.label();
+}
 
 /* ---------- ブックマーク（★） ---------- */
 var BM = {
@@ -80,7 +153,7 @@ var BM = {
   toggle: function (deckId, num) {
     var a = BM.list(deckId), i = a.indexOf(num);
     if (i >= 0) a.splice(i, 1); else a.push(num);
-    LS.set('saa.bm.' + deckId, a); return i < 0;
+    LS.set('saa.bm.' + deckId, a); if (Sync) Sync.pushProgress(deckId, num); return i < 0;
   }
 };
 
@@ -102,9 +175,479 @@ var ExplStore = {
     var m = ExplStore.all(deckId);
     if (text && text.trim()) m[num] = text; else delete m[num];
     LS.set('saa.expl.' + deckId, m);
+    if (Sync) Sync.pushProgress(deckId, num);
   },
   count: function (deckId) { return Object.keys(ExplStore.all(deckId)).length; }
 };
+/* ---------- 自信度＋思ったことメモ（端末内保存。Phase2でサーバー同期） ---------- */
+var CONF_MARKS = ['◎', '○', '△', '×'];
+var CONF_LABEL = { '◎': '確信', '○': 'たぶん', '△': '勘', '×': 'わからない' };
+function normConf(c) { return ({ '〇': '○', '✕': '×', 'x': '×', 'X': '×', 'ｘ': '×' })[c] || c; }
+var CONF = {
+  all: function (deckId) { return LS.get('saa.conf.' + deckId, {}); },
+  get: function (deckId, num) { return CONF.all(deckId)[num] || null; },
+  _save: function (deckId, num, e) {
+    var m = CONF.all(deckId);
+    if (e && (e.c || e.m)) m[num] = e; else delete m[num];
+    LS.set('saa.conf.' + deckId, m);
+    if (Sync) Sync.pushProgress(deckId, num); // サーバー同期（未ログインなら無視）
+  },
+  setConf: function (deckId, num, c) {
+    var e = CONF.get(deckId, num) || {};
+    if (c) e.c = c; else delete e.c;
+    CONF._save(deckId, num, e);
+  },
+  setMemo: function (deckId, num, text) {
+    var e = CONF.get(deckId, num) || {};
+    text = (text || '').trim();
+    if (text) e.m = text; else delete e.m;
+    CONF._save(deckId, num, e);
+  },
+  count: function (deckId) { return Object.keys(CONF.all(deckId)).length; }
+};
+/* 自信度セレクタ＋メモ欄（試験・解説の両モードで共用） */
+function confSectionHtml(deckId, q) {
+  var cur = CONF.get(deckId, q.num) || {};
+  var btns = CONF_MARKS.map(function (mk, i) {
+    return '<button class="conf-btn' + (cur.c === mk ? ' on c' + i : '') + '" data-act="confSet" data-num="' + q.num +
+      '" data-c="' + mk + '" title="' + CONF_LABEL[mk] + '">' + mk + '</button>';
+  }).join('');
+  return '<div class="conf-wrap">' +
+    '<div class="conf-row"><span class="conf-lab">自信度</span><div class="conf-sel">' + btns +
+    '<button class="conf-btn clr' + (cur.c ? '' : ' on') + '" data-act="confSet" data-num="' + q.num + '" data-c="">クリア</button>' +
+    '</div></div>' +
+    '<textarea class="conf-memo" id="confMemo-' + q.num + '" data-num="' + q.num + '" rows="2" ' +
+    'placeholder="思ったことメモ（例: AかDで迷った／Cはなぜ違う？）">' + esc(cur.m || '') + '</textarea>' +
+    '</div>';
+}
+/* メモ欄(textarea)の保存（blur時）を結びつける。試験・解説の描画後に呼ぶ */
+function bindConfInputs(deckId) {
+  var tas = app.querySelectorAll('.conf-memo');
+  for (var i = 0; i < tas.length; i++) {
+    (function (ta) {
+      ta.addEventListener('change', function () { CONF.setMemo(deckId, parseInt(ta.dataset.num, 10), ta.value); });
+    })(tas[i]);
+  }
+}
+
+/* ---------- 間隔反復（軽量Leitner：今日の宿題用） ---------- */
+function ymdLocal(d) { function z(n) { return (n < 10 ? '0' : '') + n; } return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()); }
+var SRS = {
+  all: function (id) { return LS.get('saa.srs.' + id, {}); },
+  get: function (id, num) { return SRS.all(id)[num] || null; },
+  set: function (id, num, e) { var m = SRS.all(id); if (e) m[num] = e; else delete m[num]; LS.set('saa.srs.' + id, m); if (Sync) Sync.pushProgress(id, num); },
+  grade: function (id, num, correct) {
+    var e = SRS.get(id, num) || {}; var box = correct ? Math.min((e.box || 0) + 1, 5) : 1;
+    var days = [0, 1, 2, 4, 8, 16][box] || 16;
+    SRS.set(id, num, { box: box, due: Date.now() + days * 864e5, last: correct ? 'o' : 'x', lastDay: ymdLocal(new Date()) });
+  }
+};
+
+/* ---------- サーバーAPI（同一オリジン。未ログイン/サーバー無しならローカルのみで動作） ---------- */
+var API = {
+  available: null,                          // /api 到達可否（null=未判定, true=あり, false=なし）
+  token: function () { return LS.get('saa.token', ''); },
+  setToken: function (t) { if (t) LS.set('saa.token', t); else LS.del('saa.token'); },
+  req: function (method, p, body) {
+    var h = { 'Content-Type': 'application/json' }; var tk = API.token(); if (tk) h.Authorization = 'Bearer ' + tk;
+    return fetch('/api' + p, { method: method, headers: h, body: body ? JSON.stringify(body) : undefined }).then(function (r) {
+      if (r.status === 401) { API.setToken(''); var e = new Error('unauthorized'); e.code = 401; throw e; }
+      if (!r.ok) { var e2 = new Error('http ' + r.status); e2.code = r.status; throw e2; }
+      return r.status === 204 ? null : r.json();
+    });
+  },
+  login: function (pw) { return API.req('POST', '/login', { password: pw }).then(function (d) { API.setToken(d.token); return d; }); },
+  getDecks: function () { return API.req('GET', '/decks'); },
+  getDeck: function (id) { return API.req('GET', '/decks/' + encodeURIComponent(id)); },
+  putDeck: function (d) { return API.req('PUT', '/decks/' + encodeURIComponent(d.id), d); },
+  delDeck: function (id) { return API.req('DELETE', '/decks/' + encodeURIComponent(id)); },
+  getProgress: function (id) { return API.req('GET', '/progress?deck=' + encodeURIComponent(id)); },
+  putProgress: function (id, num, o) { return API.req('PUT', '/progress/' + encodeURIComponent(id) + '/' + num, o); },
+  getAttempts: function (id) { return API.req('GET', '/attempts?deck=' + encodeURIComponent(id)); },
+  homework: function (n, deckId) {
+    var p = '/homework/today?n=' + (n || 10);
+    if (deckId) p += '&deck=' + encodeURIComponent(deckId);
+    return API.req('GET', p);
+  }
+};
+
+/* ---------- 同期（localStorageをキャッシュ、サーバーを正）＋オフラインoutbox ---------- */
+var Sync = {
+  suppress: false,
+  online: function () { return API.available && !!API.token(); },
+  pushProgress: function (id, num) {
+    if (!Sync.online() || Sync.suppress) return;
+    var c = CONF.get(id, num) || {}, s = SRS.get(id, num) || {};
+    Sync._send('PUT', '/progress/' + encodeURIComponent(id) + '/' + num, {
+      conf: c.c || '', memo: c.m || '', bookmark: BM.has(id, num), expl: ExplStore.get(id, num) || '',
+      box: s.box || 0, due: s.due || 0, last: s.last || '', lastDay: s.lastDay || ''
+    }, 'p:' + id + ':' + num);
+  },
+  pushDeck: function (id) { if (!Sync.online() || Sync.suppress) return; var d = Store.getDeck(id); if (d) Sync._send('PUT', '/decks/' + encodeURIComponent(id), d, 'd:' + id); },
+  pushAttempt: function (id, a) { if (!Sync.online() || Sync.suppress) return; Sync._send('POST', '/attempts', { deckId: id, attempt: a }, 'a:' + id + ':' + (a.id || Date.now())); },
+  delDeck: function (id) { if (Sync.online()) API.delDeck(id).catch(function () {}); },
+  _send: function (method, p, body, key) { API.req(method, p, body).catch(function (e) { if (e && e.code === 401) return; Sync._queue({ method: method, p: p, body: body, key: key }); }); },
+  _queue: function (op) { var ob = LS.get('saa.outbox', []).filter(function (x) { return x.key !== op.key; }); ob.push(op); if (ob.length > 3000) ob = ob.slice(-3000); LS.set('saa.outbox', ob); },
+  flushOutbox: function () {
+    if (!Sync.online()) return Promise.resolve();
+    var ob = LS.get('saa.outbox', []); if (!ob.length) return Promise.resolve();
+    LS.set('saa.outbox', []);
+    return ob.reduce(function (pr, op) { return pr.then(function () { return API.req(op.method, op.p, op.body).catch(function () { Sync._queue(op); }); }); }, Promise.resolve());
+  },
+  pullInto: function (list) {
+    Sync.suppress = true;
+    return (list ? Promise.resolve(list) : API.getDecks()).then(function (decks) {
+      LS.set('saa.deckIndex', decks.map(function (d) { return d.id; }));
+      return decks.reduce(function (pr, meta) {
+        return pr.then(function () {
+          return Promise.all([API.getDeck(meta.id), API.getProgress(meta.id), API.getAttempts(meta.id)]).then(function (r) {
+            LS.set('saa.deck.' + meta.id, r[0] || { id: meta.id, name: meta.name, questions: [] });
+            applyServerProgress(meta.id, r[1] || {});
+            LS.set('saa.attempts.' + meta.id, r[2] || []);
+          });
+        });
+      }, Promise.resolve());
+    }).then(function () { Sync.suppress = false; }, function (e) { Sync.suppress = false; throw e; });
+  },
+  boot: function () {
+    if (location.protocol === 'file:') { API.available = false; return show('home'); }
+    API.getDecks().then(function (list) {
+      API.available = true;
+      Sync.pullInto(list).then(function () { Sync.flushOutbox(); show('home'); }, function () { show('home'); });
+    }).catch(function (e) {
+      if (e && e.code === 401) { API.available = true; show('login'); }
+      else { API.available = false; show('home'); }    // サーバー無し＝従来のローカル動作
+    });
+  }
+};
+/* サーバーのprogress（{num:{conf,memo,bookmark,expl,box,due,last,lastDay}}）を各ローカルストアへ展開 */
+function applyServerProgress(id, prog) {
+  var conf = {}, bm = [], expl = {}, srs = {};
+  Object.keys(prog || {}).forEach(function (num) {
+    var e = prog[num] || {};
+    if (e.conf || e.memo) { conf[num] = {}; if (e.conf) conf[num].c = e.conf; if (e.memo) conf[num].m = e.memo; }
+    if (e.bookmark) bm.push(parseInt(num, 10));
+    if (e.expl) expl[num] = e.expl;
+    if (e.box || e.due || e.last) srs[num] = { box: e.box || 0, due: e.due || 0, last: e.last || '', lastDay: e.lastDay || '' };
+  });
+  LS.set('saa.conf.' + id, conf); LS.set('saa.bm.' + id, bm); LS.set('saa.expl.' + id, expl); LS.set('saa.srs.' + id, srs);
+}
+window.addEventListener('online', function () { Sync.flushOutbox(); });
+
+/* ---------- ログイン画面 ---------- */
+function renderLogin() {
+  app.innerHTML = '<div class="card" style="margin-top:28px"><h3>🔒 ログイン</h3>' +
+    '<p class="small muted">このサーバーの学習データ（問題・自信度メモ・成績）を見るにはパスワードが必要です。</p>' +
+    '<label class="fld"><span class="lab">パスワード</span><input type="password" id="loginPw" autocomplete="current-password"></label>' +
+    '<button class="btn primary block" data-act="doLogin">ログイン</button>' +
+    '<button class="btn ghost block" data-act="openSchedule" style="margin-top:8px">学習スケジュールだけ見る</button>' +
+    '<p class="small ngc" id="loginMsg" style="margin-top:8px"></p></div>';
+  var pw = $('#loginPw'); if (pw) { pw.focus(); pw.addEventListener('keydown', function (e) { if (e.key === 'Enter') handlers.doLogin(); }); }
+}
+
+/* ---------- 今日の宿題 ---------- */
+var HW_N = 20;  // 今日の宿題の1日の問題数（固定）
+var SCHEDULE_EXAM_DATE = '2026-07-14';
+var STUDY_PLAN = [
+  { date: '2026-06-24', shift: '休', theme: '現状整理＋◎思い込み7問', focus: 'Q21,24,25,48,55,59,62を正解理由まで言語化', target: 25 },
+  { date: '2026-06-25', shift: 'A勤', theme: 'Cognito / IAM / Identity Center', focus: '認証・認可・ロール委任（仕事後・夜に学習）', target: 15 },
+  { date: '2026-06-26', shift: '休', theme: 'ネットワーク集中（VPC/PrivateLink/NAT/Route53/CloudFront/WAF）', focus: '閉域接続・OAC・地理制限・DNS設計', target: 25 },
+  { date: '2026-06-27', shift: 'C勤', theme: '軽め：◎思い込み7問の再確認', focus: '長時間勤務日。結論だけ音読', target: 6 },
+  { date: '2026-06-28', shift: '休', theme: 'コンピュート集中（ASG/ALB/ECS/Lambda/Fargate）', focus: 'ターゲット追跡・Fargate・イベント駆動', target: 25 },
+  { date: '2026-06-29', shift: 'B勤', theme: '疎結合（SQS FIFO/SNS/Step Functions）', focus: 'B勤＝少なめ。朝に短時間', target: 10 },
+  { date: '2026-06-30', shift: '休', theme: 'ストレージ集中（S3/EBS/EFS/FSx）', focus: 'SSE強制・ライフサイクル・io2 Block Express', target: 25 },
+  { date: '2026-07-01', shift: 'A勤', theme: 'DB（RDS/Aurora/DynamoDB/DAX）', focus: '整合性・キャッシュ・レプリカ（夜に学習）', target: 15 },
+  { date: '2026-07-02', shift: 'A勤', theme: 'SG / NACL / セキュリティ', focus: 'ステートフル差・番号順・最小権限', target: 15 },
+  { date: '2026-07-03', shift: 'A勤', theme: '移行/DMS/DataSync＋監視・コスト', focus: 'SCT・Direct Connect・Savings Plans', target: 15 },
+  { date: '2026-07-04', shift: '休', theme: '模試1の誤答横断', focus: '思い込み優先で弱点ジャンル再演習', target: 25 },
+  { date: '2026-07-05', shift: 'C勤', theme: '軽め：思い込み再確認＋苦手1ジャンル', focus: '長時間勤務日。無理しない', target: 6 },
+  { date: '2026-07-06', shift: 'B勤', theme: '模試2の誤答横断（軽め）', focus: 'B勤＝少なめ。朝に短時間', target: 10 },
+  { date: '2026-07-07', shift: '休', theme: '模試3の誤答横断（正誤修正後）', focus: '正解理由と不正解の切り分け', target: 25 },
+  { date: '2026-07-08', shift: 'A勤', theme: '模試4の思い込み総復習', focus: '◎○で外した問題を自分の言葉で説明', target: 15 },
+  { date: '2026-07-09', shift: '夜勤(1)', theme: '休養（勉強なし）', focus: '夜勤1日目。しっかり休む', target: 0 },
+  { date: '2026-07-10', shift: '夜勤(2)', theme: '超軽め：◎7問の一言確認だけ', focus: '夜勤2日目。無理なら休んでOK', target: 5 },
+  { date: '2026-07-11', shift: '休', theme: '夜勤明け回復＋弱点の軽い反復', focus: '体調最優先。残り誤答を軽く', target: 15 },
+  { date: '2026-07-12', shift: '休', theme: '本番形式65問（模試リハ）', focus: '1問1.8分・迷ったら印を付けて先へ', target: 65 },
+  { date: '2026-07-13', shift: 'A勤', theme: '前日仕上げ', focus: 'チートシート＋◎7問。夜は軽く早寝', target: 12 },
+  { date: '2026-07-14', shift: '休', theme: '本番当日', focus: '朝は◎7問と型だけ。新規学習はしない', target: 0 }
+];
+function parseYmd(s) {
+  var a = String(s || '').split('-');
+  return new Date(parseInt(a[0], 10), parseInt(a[1], 10) - 1, parseInt(a[2], 10));
+}
+function daysUntilLocalDate(s) {
+  var n = new Date();
+  var today = new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  return Math.max(0, Math.ceil((parseYmd(s).getTime() - today.getTime()) / 864e5));
+}
+function jpDateLabel(s) {
+  var d = parseYmd(s);
+  var w = ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
+  return (d.getMonth() + 1) + '/' + d.getDate() + '(' + w + ')';
+}
+function reviewedCountOn(scopeId, day) {
+  var ids = scopeId ? [scopeId] : Store.deckIds();
+  var n = 0;
+  ids.forEach(function (id) {
+    var m = SRS.all(id);
+    Object.keys(m || {}).forEach(function (num) { if (m[num] && m[num].lastDay === day) n++; });
+  });
+  return n;
+}
+function scheduleStats(scopeId) {
+  var st = reviewStats(scopeId);
+  var remain = Math.max(0, st.total - st.mastered);
+  var days = Math.max(1, daysUntilLocalDate(SCHEDULE_EXAM_DATE));
+  return { review: st, remain: remain, days: days, daily: remain ? Math.max(1, Math.ceil(remain / days)) : 0 };
+}
+function scheduleHomeCard() {
+  var scope = ActiveDeck.deckId() ? ActiveDeck.label() : '全デッキ横断';
+  var ss = scheduleStats(ActiveDeck.deckId());
+  return '<div class="card schedule-card">' +
+    '<div class="row"><div class="grow"><h3 style="margin:0">学習スケジュール</h3>' +
+    '<div class="small muted">本番 2026/7/14 まで残り' + daysUntilLocalDate(SCHEDULE_EXAM_DATE) + '日・対象: <b>' + esc(scope) + '</b></div></div></div>' +
+    '<div class="small" style="margin-top:8px">残り誤答 <b>' + ss.remain + '</b>問 / 今日の目安 <b>' + ss.daily + '</b>問</div>' +
+    '<button class="btn primary block" data-act="openSchedule" style="margin-top:10px">スケジュールを見る</button></div>';
+}
+function homeHwCard() {
+  var scope = ActiveDeck.deckId() ? ActiveDeck.label() : '全デッキ横断';
+  var st = reviewStats(ActiveDeck.deckId());
+  var rl = st.total ? '<div class="small" style="margin:0 0 8px">📚 誤答の見直し 残り <b>' + (st.total - st.mastered) + '</b> / ' + st.total + '（🔴思い込み残 ' + st.omoiRemain + '）</div>' : '';
+  return '<div class="card" style="border-color:#1d4ed8">' +
+    '<div class="row"><b class="grow">📅 今日の宿題</b>' +
+    '<button class="btn ghost sm" data-act="syncNow">🔄 同期</button>' +
+    '<button class="btn ghost sm" data-act="logout">ログアウト</button></div>' +
+    '<p class="small muted" style="margin:6px 0">その日の弱点・思い込み・復習タイミングから自動出題。対象: <b>' + esc(scope) + '</b></p>' +
+    '<div class="hw-total" style="margin:6px 0"><span class="hw-total-num">1日 全 ' + HW_N + ' 問</span></div>' + rl +
+    '<button class="btn primary block" data-act="startHw">▶ 今日の宿題（TODO）を開く</button></div>';
+}
+var HwStreak = {
+  get: function () { return LS.get('saa.hwStreak', { last: '', n: 0 }); },
+  bump: function () {
+    var s = HwStreak.get(), t = ymdLocal(new Date());
+    if (s.last === t) return s.n;
+    var y = ymdLocal(new Date(Date.now() - 864e5));
+    s.n = (s.last === y) ? (s.n + 1) : 1; s.last = t;
+    LS.set('saa.hwStreak', s); return s.n;
+  }
+};
+function startHomeworkSession(hw, subset) {
+  state.lastHw = hw;
+  var src = (subset && subset.length) ? subset : (hw.items || []);
+  var qs = [];
+  src.forEach(function (it) {
+    var d = Store.getDeck(it.deckId); if (!d) return;
+    var q = (d.questions || []).find(function (x) { return x.num === it.num; });
+    if (q) { var qq = Object.assign({}, q); qq._deck = it.deckId; qq._why = it.why; qs.push(qq); }
+  });
+  if (!qs.length) { toast('対象の問題が見つかりません'); return; }
+  state.exam = { deckId: src[0].deckId, deckName: '今日の宿題', qs: qs, idx: 0, answers: {}, flags: {}, startedAt: Date.now(), study: true, revealed: {}, hw: true };
+  saveActiveExam(); show('examRun');
+}
+function finishHomework() {
+  var ex = state.exam; if (_timer) clearInterval(_timer);
+  ex.graded = ex.graded || {};
+  var ok = 0;
+  ex.qs.forEach(function (q) {
+    var sel = (ex.answers[q.num] || []).slice();
+    var correct = sel.length > 0 && eqSet(sel, q.correct);
+    if (correct) ok++;
+    if (!ex.graded[q.num]) { SRS.grade(q._deck || ex.deckId, q.num, correct); ex.graded[q.num] = true; }  // 答え合わせ済みは二重採点しない
+  });
+  HwStreak.bump();
+  state.lastHwResult = { total: ex.qs.length, correct: ok };
+  state.exam = null; clearActiveExam();
+  toast(ok + ' / ' + ex.qs.length + ' 正解・宿題を更新');
+  show('homework');
+}
+/* 今日の宿題：TODOチェックリスト */
+/* 見直し対象（誤答=srcVerdict×）プールを cache から作る（scope: 特定デッキ or 全デッキ） */
+function reviewPool(scopeId) {
+  var ids = scopeId ? [scopeId] : Store.deckIds();
+  var today = ymdLocal(new Date());
+  var pool = [];
+  ids.forEach(function (id) {
+    var d = Store.getDeck(id); if (!d) return;
+    (d.questions || []).forEach(function (q) {
+      if (q.srcVerdict !== '×' || !q.srcAnswer) return;
+      var s = SRS.get(id, q.num) || {}, c = (CONF.get(id, q.num) || {}).c || '';
+      var omoi = (c === '◎' || c === '○');
+      pool.push({ deckId: id, num: q.num, genre: q.genre || '',
+        why: omoi ? ('思い込み（自信' + c + 'で誤答）') : '不正解の復習',
+        box: s.box || 0, reviewed: !!(s.box || s.last), mastered: (s.box || 0) >= 3,
+        omoi: omoi, doneToday: (s.lastDay === today) });
+    });
+  });
+  return pool;
+}
+function reviewStats(scopeId) {
+  var p = reviewPool(scopeId), reviewed = 0, mastered = 0, omoiRemain = 0;
+  p.forEach(function (x) { if (x.reviewed) reviewed++; if (x.mastered) mastered++; if (x.omoi && !x.mastered) omoiRemain++; });
+  return { total: p.length, reviewed: reviewed, untouched: p.length - reviewed, mastered: mastered, omoiRemain: omoiRemain };
+}
+/* 見直しの全体像カード（今日の分だけでなく、誤答全体の残量を表示） */
+function reviewCardHtml(scopeId) {
+  var st = reviewStats(scopeId);
+  if (!st.total) return '';
+  var label = scopeId ? ActiveDeck.label() : '全デッキ';
+  var remain = st.total - st.mastered;
+  var n = HW_N;
+  return '<div class="card active-deck-card"><h3 style="margin:.1em 0 .4em">📚 誤答の見直し（' + esc(label) + '）</h3>' +
+    '<div class="bar"><i style="width:' + pct(st.mastered, st.total) + '%"></i></div>' +
+    '<div class="small" style="margin-top:6px">誤答 <b>' + st.total + '</b>問 ｜ 着手 ' + st.reviewed + ' ｜ 克服 ' + st.mastered + ' ｜ <span class="ngc">🔴思い込み残 ' + st.omoiRemain + '</span></div>' +
+    '<div class="small muted" style="margin-top:2px">未着手 ' + st.untouched + ' ／ 残り(未克服) <b>' + remain + '</b>問（1日' + n + '問で約' + Math.max(1, Math.ceil(remain / n)) + '日）</div>' +
+    (remain > 0
+      ? '<button class="btn primary block" data-act="hwReview" style="margin-top:10px">▶ 誤答の見直しを続ける（残りから' + Math.min(remain, 20) + '問）</button>'
+      : '<div class="small okc" style="margin-top:6px">🎉 誤答はすべて克服！</div>') +
+    '</div>';
+}
+/* 見直しセッション（残りの誤答を思い込み優先でまとめて） */
+function startReviewSession(items) {
+  var qs = [];
+  items.forEach(function (it) {
+    var d = Store.getDeck(it.deckId); if (!d) return;
+    var q = (d.questions || []).find(function (x) { return x.num === it.num; });
+    if (q) { var qq = Object.assign({}, q); qq._deck = it.deckId; qq._why = it.why; qs.push(qq); }
+  });
+  if (!qs.length) { toast('対象の問題が見つかりません'); return; }
+  state.exam = { deckId: items[0].deckId, deckName: '誤答の見直し', qs: qs, idx: 0, answers: {}, flags: {}, startedAt: Date.now(), study: true, revealed: {}, hw: true };
+  saveActiveExam(); show('examRun');
+}
+function renderHomework() {
+  var today = ymdLocal(new Date()), hw = state.lastHw;
+  var html = reviewCardHtml(ActiveDeck.deckId());   // 見直しの全体像（常に先頭に表示）
+  if (hw && hw.date === today && (hw.items || []).length) {
+    var items = hw.items;
+    var doneF = items.map(function (it) { var s = SRS.get(it.deckId, it.num); return !!(s && s.lastDay === today); });
+    var done = doneF.filter(Boolean).length, total = items.length, remain = total - done;
+    var streak = HwStreak.get().n;
+    var rows = '';
+    items.forEach(function (it, i) {
+      var dn = doneF[i];
+      var idl = qId(it.deckName || it.deckId, it.num);
+      rows += '<button class="btn block hw-item' + (dn ? ' done' : '') + '" data-act="hwItem" data-i="' + i + '">' +
+        '<span class="hw-mk">' + (dn ? '✅' : '☐') + '</span>' +
+        '<span class="grow hw-body"><b>' + esc(idl) + '</b> <span class="small muted">' + esc(it.genre || '') + '</span><br>' +
+        '<span class="small">' + esc(it.why || '') + '</span></span>' +
+        '<span class="small">' + (dn ? '済' : '解く →') + '</span></button>';
+    });
+    html +=
+      '<div class="card"><div class="row"><h3 class="grow" style="margin:0">📅 今日の宿題</h3>' +
+      '<button class="btn ghost sm" data-act="startHw">↻ 再取得</button></div>' +
+      '<div class="small muted" style="margin-top:4px">' + esc(hw.date) + ' ・ 本番まで' + (hw.daysLeft != null ? hw.daysLeft : '-') + '日 ・ 🔥連続' + streak + '日</div>' +
+      '<div class="hw-total" style="margin-top:8px"><span class="hw-total-num">全 ' + total + ' 問</span>' +
+      '<span class="small">　残り <b>' + remain + '</b> 問 ／ 完了 ' + done + ' 問</span></div>' +
+      '<div class="bar" style="margin-top:8px"><i style="width:' + pct(done, total) + '%"></i></div>' +
+      (remain === 0 ? '<div class="small okc" style="margin-top:6px">🎉 今日の宿題は全部できた！</div>' : '') +
+      '<div class="btnrow" style="margin-top:10px">' +
+      (remain > 0 ? '<button class="btn primary grow" data-act="hwAll">▶ 残り' + remain + '問をまとめて解く</button>' : '') +
+      '<button class="btn grow" data-act="hwPrint">🖨 宿題をプリント（全' + total + '問）</button>' +
+      '</div>' +
+      '</div>' +
+      '<div class="card">' + rows + '</div>' +
+      '<div class="card"><p class="small muted">AI家庭教師で深掘りするには下をコピー。</p>' +
+      '<button class="btn block" data-act="hwTutorCopy">📋 今日の宿題を教師プロンプトでやる（コピー）</button></div>';
+  } else {
+    html += '<div class="card"><h3>📅 今日の宿題</h3>' +
+      '<p class="small muted">サーバーから今日の分（約' + HW_N + '問）を取得します。</p>' +
+      '<button class="btn primary block" data-act="startHw">今日の宿題を取得</button></div>';
+  }
+  app.innerHTML = html;
+}
+function renderHwResult() {
+  var r = state.lastHwResult || { total: 0, correct: 0 }, hw = state.lastHw || {};
+  app.innerHTML = '<div class="card" style="text-align:center"><div class="small muted">今日の宿題 ' + esc(hw.date || '') + '</div>' +
+    '<div class="bigpct">' + r.correct + ' / ' + r.total + '</div>' +
+    '<div class="muted">本番まで ' + (hw.daysLeft != null ? hw.daysLeft : '-') + '日</div></div>' +
+    '<div class="card"><p class="small muted">この宿題をAI家庭教師でさらに深掘りできます。下をコピーして、Claudeの対話学習プロンプトに続けて貼ってください。</p>' +
+    '<button class="btn primary block" data-act="hwTutorCopy">📋 今日の宿題を教師プロンプトでやる（コピー）</button></div>' +
+    '<div class="btnrow"><button class="btn grow" data-act="startHw">🔁 もう一度</button>' +
+    '<button class="btn grow" data-act="home">🏠 ホーム</button></div>';
+}
+function buildTodayTutorPrompt(hw) {
+  var L = ['【SAA-C03 今日の宿題】' + (hw.date || '') + '（本番まで' + (hw.daysLeft != null ? hw.daysLeft : '?') + '日）', '',
+    '私はこの問題セットを今日解きました。1問ずつ、私の回答を待ってから採点し、なぜ正解で他がダメかを本番レベルで解説してください。◎○で外した「思い込み」は特に重点的に。', '',
+    '対象（実際の模試の問題番号）:'];
+  (hw.items || []).forEach(function (it) { L.push('- ' + (it.deckName || it.deckId) + ' Q' + it.num + '（' + (it.genre || '') + '／' + (it.why || '') + '）'); });
+  L.push('', 'まず1問目から、模試と同じ難易度で出題してください。');
+  return L.join('\n');
+}
+/* 試験ランナーで「今日の宿題」は複数デッキ横断。問題ごとの所属デッキを返す */
+function qDeckId(q) { var ex = state.exam; return (ex && ex.hw && q && q._deck) ? q._deck : (ex ? ex.deckId : ''); }
+
+/* ---------- 今日の宿題をプリント（白黒印刷向けの別ページを生成） ---------- */
+var PRINT_LETTERS = 'アイウエオカキクケコ';
+function buildHomeworkPrintHtml(hw) {
+  var items = (hw && hw.items) || [];
+  // hwの各項目から実際の問題データを引く
+  var qs = [];
+  items.forEach(function (it) {
+    var d = Store.getDeck(it.deckId); if (!d) return;
+    var q = (d.questions || []).find(function (x) { return x.num === it.num; });
+    if (q) qs.push({ q: q, id: qId(d.name || it.deckId, it.num), deckId: it.deckId, deckName: d.name || it.deckId, genre: q.genre || it.genre || '' });
+  });
+  var date = hw.date || ymdLocal(new Date());
+  var daysLeft = (hw.daysLeft != null) ? hw.daysLeft : daysUntilLocalDate(SCHEDULE_EXAM_DATE);
+  var css = '@page{size:A4;margin:13mm 12mm}*{box-sizing:border-box}' +
+    'body{font-family:"Yu Gothic","Meiryo",sans-serif;color:#000;font-size:10.5pt;line-height:1.5}' +
+    'h1{font-size:16pt;margin:0 0 2px}' +
+    '.meta{font-size:9.5pt;margin-bottom:9px;border-bottom:2px solid #000;padding-bottom:5px}' +
+    '.section-title{font-size:13pt;font-weight:bold;border-left:5px solid #000;padding-left:8px;margin:0 0 9px}' +
+    '.q{border:1px solid #000;border-radius:4px;padding:7px 9px;margin-bottom:8px;page-break-inside:avoid}' +
+    '.qhead{display:flex;align-items:center;gap:7px;margin-bottom:4px;flex-wrap:wrap}' +
+    '.qid{font-weight:bold;border:1.5px solid #000;padding:0 8px;border-radius:3px;font-size:10pt}' +
+    '.gtag{font-size:8.5pt;border:1px solid #000;padding:0 6px;border-radius:3px}' +
+    '.ans-blank{margin-left:auto;font-size:9.5pt;font-weight:bold}.qtext{margin-bottom:5px;white-space:pre-wrap}' +
+    '.ch{display:flex;gap:6px;padding:1.5px 0;align-items:flex-start}.let{font-weight:bold;min-width:1.4em}' +
+    '.pagebreak{page-break-before:always}' +
+    '.a{border-bottom:1px solid #000;padding:7px 0;page-break-inside:avoid}' +
+    '.ahead{display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap}' +
+    '.cor{font-weight:bold;font-size:11pt;text-decoration:underline}' +
+    '.rsn{font-size:9.5pt;line-height:1.55}.rsn .md-h{font-size:10pt;font-weight:bold;margin:5px 0 2px}.rsn ul{margin:2px 0 2px 0;padding-left:1.2em}.rsn li{margin:1px 0}.rsn p{margin:2px 0}' +
+    '@media screen{body{max-width:820px;margin:20px auto;padding:0 16px}}' +
+    '.tip{border:1px solid #000;border-radius:4px;padding:8px 12px;font-size:9.5pt;margin-bottom:12px}';
+  var H = [];
+  H.push('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>今日の宿題 ' + date + '</title><style>' + css + '</style></head><body>');
+  H.push('<div class="tip">📄 このページで <b>Ctrl+P</b>（スマホは共有→印刷）で用紙/PDF出力。問題のあと改ページして<b>解答・解説</b>が続きます。各問の <b>ID（例 模試4-Q21）</b>で結果を写真に撮って送ってください。</div>');
+  H.push('<h1>今日の宿題</h1>');
+  H.push('<div class="meta">' + date + '　／　本番まで残り' + daysLeft + '日　／　全' + qs.length + '問　／　ID付き</div>');
+  // 問題セクション
+  H.push('<div class="section-title">■ 問題（全' + qs.length + '問）</div>');
+  qs.forEach(function (o) {
+    var q = o.q;
+    var chs = (q.choices || []).map(function (c, i) {
+      return '<div class="ch"><span class="let">' + (PRINT_LETTERS[i] || (i + 1)) + '</span><span>' + esc(c) + '</span></div>';
+    }).join('');
+    H.push('<div class="q"><div class="qhead"><span class="qid">' + esc(o.id) + '</span>' +
+      '<span class="gtag">' + esc(o.genre) + '</span>' +
+      '<span class="ans-blank">解答[　　]</span></div>' +
+      '<div class="qtext">' + esc(q.text) + '</div><div class="choices">' + chs + '</div></div>');
+  });
+  // 解答・解説セクション
+  H.push('<div class="pagebreak"></div><div class="section-title">■ 解答・解説</div>');
+  qs.forEach(function (o) {
+    var q = o.q;
+    var cor = (q.correct || []).map(function (n) { return PRINT_LETTERS[n - 1] || n; }).join('');
+    var expl = effExpl(o.deckId, q);
+    var body = expl ? mdToHtml(expl) : (q.explanation ? '<p>' + esc(q.explanation) + '</p>' : '<p>(解説データなし)</p>');
+    H.push('<div class="a"><div class="ahead"><span class="qid">' + esc(o.id) + '</span>' +
+      '<span class="cor">正解 ' + esc(cor) + '</span><span class="gtag">' + esc(o.genre) + '</span></div>' +
+      '<div class="rsn">' + body + '</div></div>');
+  });
+  H.push('</body></html>');
+  return H.join('');
+}
+function printHomework() {
+  var hw = state.lastHw;
+  if (!hw || !(hw.items || []).length) { toast('先に今日の宿題を取得してください'); return; }
+  var html = buildHomeworkPrintHtml(hw);
+  var w = window.open('', '_blank');
+  if (!w) { toast('ポップアップがブロックされました。許可してください'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  // 描画後に印刷ダイアログを開く（スマホ含め手動Ctrl+Pでも可）
+  setTimeout(function () { try { w.focus(); w.print(); } catch (e) {} }, 400);
+}
+
 /* 表示に使う解説（自分で追記したもの＞取込んだGemini解説） */
 function effExpl(deckId, q) { return ExplStore.get(deckId, q.num) || q.gemini || ''; }
 
@@ -302,6 +845,25 @@ function deckLabel(name) {
     .replace(/[０-９]/g, function (d) { return String.fromCharCode(d.charCodeAt(0) - 0xFEE0); }) // 全角→半角
     .replace(/[1-9]/g, function (d) { return c[+d - 1]; });
 }
+/* 問題ID（プリント・写真照合・AI管理用）。デッキ名/IDの丸数字・全角を半角化し「模試4-Q21」形式に */
+function deckCode(nameOrId) {
+  var circ = '①②③④⑤⑥⑦⑧⑨';
+  return String(nameOrId == null ? '' : nameOrId)
+    .replace(/[０-９]/g, function (d) { return String.fromCharCode(d.charCodeAt(0) - 0xFEE0); })
+    .replace(/[①-⑨]/g, function (c) { return String(circ.indexOf(c) + 1); })
+    .replace(/\s+/g, '').trim();
+}
+function qId(deckNameOrId, num) { return deckCode(deckNameOrId) + '-Q' + num; }
+/* デッキIDから表示名を引いてID化（見つからなければIDをそのまま使う） */
+function qIdByDeck(deckId, num, fallbackName) {
+  var d = Store.getDeck(deckId);
+  return qId((d && d.name) || fallbackName || deckId, num);
+}
+/* 試験ランナー中の問題のID（宿題は問題ごとに所属デッキが異なる） */
+function qIdForExam(ex, q) {
+  var did = (ex && ex.hw && q && q._deck) ? q._deck : (ex ? ex.deckId : '');
+  return qIdByDeck(did, q.num, ex && ex.deckName);
+}
 /* Gemini解説JSON（{ "1":"md", "2":"md", ... }）を {番号: 本文} に */
 function parseGeminiJson(text) {
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
@@ -366,6 +928,7 @@ function buildQuestions(rows) {
   var h = rows[0].map(function (x) { return x.trim(); });
   function idx(n) { return h.indexOf(n); }
   var cNum = idx('問題番号'), cText = idx('問題内容'), cCor = idx('正解番号'), cExp = idx('解説');
+  var cVer = idx('正誤'), cAns = idx('回答番号'); // 本番(模試)の正誤・自分の回答（自信度トリアージ用）
   var choiceCols = [];
   for (var k = 1; k <= 8; k++) { var j = idx('選択肢' + k); if (j >= 0) choiceCols.push(j); }
   var out = [];
@@ -382,6 +945,14 @@ function buildQuestions(rows) {
     var g = classify(q);
     q.genreCode = g.code; q.genre = g.name; q.importance = g.imp;
     q.correctTheme = (q.correct[0] ? (q.choices[q.correct[0] - 1] || '') : '').slice(0, 40);
+    if (cAns >= 0) {
+      var sa = (row[cAns] || '').split(';').map(function (s) { return parseInt(s.trim(), 10); }).filter(function (n) { return !isNaN(n); });
+      if (sa.length) q.srcAnswer = sa;
+    }
+    if (cVer >= 0 && (row[cVer] || '').trim()) {
+      var sv = (row[cVer] || '').trim();
+      if (sv === '○' || q.srcAnswer) q.srcVerdict = sv; // 未回答CSVの×は誤答扱いしない
+    }
     out.push(q);
   }
   out.sort(function (a, b) { return a.num - b.num; });
@@ -517,11 +1088,12 @@ function setNav(view) {
 var NAV_MAP = {
   home: 'home', import: 'import', exam: 'exam', examSetup: 'exam', examRun: 'exam', examResult: 'exam',
   practice: 'practice', practiceSetup: 'practice', practiceRun: 'practice',
-  review: 'review', reviewRun: 'review', stats: 'stats', statsDeck: 'stats'
+  review: 'review', reviewRun: 'review', stats: 'stats', statsDeck: 'stats', schedule: 'home'
 };
 function show(view, arg) {
   state.view = view;
   if (NAV_MAP[view]) setNav(NAV_MAP[view]);
+  document.body.classList.toggle('exam-wide', view === 'examRun');  // PC幅の2カラム出題
   window.scrollTo(0, 0);
   if (view === 'home') renderHome();
   else if (view === 'import') renderImport();
@@ -536,6 +1108,11 @@ function show(view, arg) {
   else if (view === 'practice') renderPracticeSetup();
   else if (view === 'practiceSetup') renderPracticeSetup(arg);
   else if (view === 'practiceRun') renderPracticeRun();
+  else if (view === 'login') renderLogin();
+  else if (view === 'hwResult') renderHwResult();
+  else if (view === 'homework') renderHomework();
+  else if (view === 'schedule') renderSchedule();
+  updateDeckChip();
   decorateGlossary();
 }
 
@@ -600,7 +1177,9 @@ function showGloss(term) {
 /* ---------- ホーム ---------- */
 function renderHome() {
   var decks = Store.decks();
-  var html = '';
+  var html = activeDeckCard(decks);
+  html += scheduleHomeCard();
+  if (API.available) html += homeHwCard();   // サーバー接続時のみ「今日の宿題」
   // 中断した試験の再開バナー
   var ae = loadActiveExam();
   if (ae) {
@@ -655,8 +1234,43 @@ function renderHome() {
     '<p class="small muted" style="margin:8px 0 0">データは端末内のみ。機種変更やブラウザ初期化に備え、たまにバックアップを。</p>' +
     '<input type="file" id="restoreFile" accept=".json" style="display:none" /></div>';
   app.innerHTML = html;
+  var ads = $('#activeDeckSel');
+  if (ads) ads.addEventListener('change', function () { ActiveDeck.set(this.value); show('home'); });
   var rf = $('#restoreFile');
   if (rf) rf.addEventListener('change', function () { doRestore(rf.files); });
+}
+
+function renderSchedule() {
+  var scopeId = ActiveDeck.deckId();
+  var scope = scopeId ? ActiveDeck.label() : '全デッキ横断';
+  var today = ymdLocal(new Date());
+  var ss = scheduleStats(scopeId);
+  var rows = '';
+  STUDY_PLAN.forEach(function (d) {
+    var actual = reviewedCountOn(scopeId, d.date);
+    var left = daysUntilLocalDate(d.date);
+    var target = d.target != null ? d.target : ss.daily;
+    var isToday = d.date === today;
+    var done = d.date < today ? (target === 0 || actual >= target) : false;
+    var klass = 'schedule-row' + (isToday ? ' today' : '') + (done ? ' done' : '');
+    rows += '<div class="' + klass + '">' +
+      '<div class="schedule-date"><b>' + esc(jpDateLabel(d.date)) + '</b><span>残り' + left + '日</span></div>' +
+      '<div class="schedule-main"><div class="row"><b class="grow">' + esc(d.theme) + '</b>' + (d.shift ? '<span class="pill' + (d.shift === '休' ? ' g' : (/夜勤/.test(d.shift) ? ' hi' : '')) + '">' + esc(d.shift) + '</span>' : '') + (done ? '<span class="pill ok">完了</span>' : (isToday ? '<span class="pill hi">今日</span>' : '')) + '</div>' +
+      '<div class="small muted">' + esc(d.focus) + '</div>' +
+      '<div class="small schedule-progress">目標 <b>' + target + '</b>問 / 実績 <b>' + actual + '</b>問</div>' +
+      '<div class="bar"><i style="width:' + pct(Math.min(actual, Math.max(target, 1)), Math.max(target, 1)) + '%"></i></div></div></div>';
+  });
+  app.innerHTML = '<div class="card schedule-hero">' +
+    '<div class="row"><button class="btn ghost sm" data-act="home">← ホーム</button><h3 class="grow" style="margin:0">学習スケジュール</h3></div>' +
+    '<div class="small muted" style="margin-top:8px">本番 2026/7/14 まで残り' + daysUntilLocalDate(SCHEDULE_EXAM_DATE) + '日・対象: <b>' + esc(scope) + '</b></div>' +
+    '<div class="kpi" style="margin-top:10px">' +
+    '<div class="b"><b>' + ss.remain + '</b><span class="small muted">残り誤答</span></div>' +
+    '<div class="b"><b>' + ss.daily + '</b><span class="small muted">1日あたり目安</span></div>' +
+    '<div class="b"><b>' + ss.review.omoiRemain + '</b><span class="small muted">思い込み残</span></div></div>' +
+    '<div class="btnrow" style="margin-top:10px">' +
+    '<button class="btn primary grow" data-act="startHw">今日の宿題を開く</button>' +
+    '<button class="btn grow" data-act="hwReview">誤答の見直し</button></div></div>' +
+    '<div class="schedule-list">' + rows + '</div>';
 }
 
 /* ---------- 取込 ---------- */
@@ -772,7 +1386,8 @@ function pickDeckCard(actLabel, act) {
   }
   var h = '<div class="card"><h3>' + actLabel + '</h3><p class="small muted">デッキを選択</p>';
   decks.forEach(function (d) {
-    h += '<button class="btn block" style="justify-content:space-between;margin:6px 0" data-act="' + act + '" data-id="' + esc(d.id) + '">' +
+    var on = ActiveDeck.deckId() === d.id;
+    h += '<button class="btn block' + (on ? ' primary' : '') + '" style="justify-content:space-between;margin:6px 0" data-act="' + act + '" data-id="' + esc(d.id) + '">' +
       '<span>' + esc(deckLabel(d.name)) + '</span><span class="small muted">' + d.count + '問</span></button>';
   });
   return h + '</div>';
@@ -781,17 +1396,25 @@ function renderExamHub() {
   var decks = Store.decks();
   if (!decks.length) { app.innerHTML = pickDeckCard('📝 試験モード', 'startExam'); return; }
   var last = LS.get('saa.lastDeck', null);
-  var id = (last && Store.getDeck(last)) ? last : decks[0].id;
+  var id = ActiveDeck.preferred(last);
   renderExamSetup(id);
 }
-function renderReviewHub() { app.innerHTML = pickDeckCard('📖 解説モード', 'openReview'); }
-function renderStatsHub() { app.innerHTML = pickDeckCard('📊 弱点分析', 'openStats'); }
+function renderReviewHub() {
+  var id = ActiveDeck.deckId();
+  if (id && Store.getDeck(id)) { show('reviewRun', { deckId: id }); return; }
+  app.innerHTML = pickDeckCard('📖 解説モード', 'openReview');
+}
+function renderStatsHub() {
+  var id = ActiveDeck.deckId();
+  if (id && Store.getDeck(id)) { show('statsDeck', id); return; }
+  app.innerHTML = pickDeckCard('📊 弱点分析', 'openStats');
+}
 
 /* ============================ 練習モード ============================ */
 function renderPracticeSetup(deckId) {
   var decks = Store.decks();
   if (!decks.length) { app.innerHTML = pickDeckCard('🎯 練習モード', 'startPractice'); return; }
-  if (!deckId || !Store.getDeck(deckId)) deckId = LS.get('saa.lastDeck', decks[0].id);
+  if (!deckId || !Store.getDeck(deckId)) deckId = ActiveDeck.preferred(LS.get('saa.lastDeck', decks[0].id));
   if (!Store.getDeck(deckId)) deckId = decks[0].id;
   var d = Store.getDeck(deckId);
   state.pSetup = deckId;
@@ -915,7 +1538,7 @@ function renderPracticeResult() {
 function renderExamSetup(deckId) {
   var decks = Store.decks();
   if (!decks.length) { app.innerHTML = pickDeckCard('📝 試験モード', 'startExam'); return; }
-  if (!deckId || !Store.getDeck(deckId)) deckId = decks[0].id;
+  if (!deckId || !Store.getDeck(deckId)) deckId = ActiveDeck.preferred(LS.get('saa.lastDeck', decks[0].id));
   var d = Store.getDeck(deckId);
   state.setupDeck = deckId;
   var genres = deckGenres(d);
@@ -1043,22 +1666,30 @@ function renderExamRun() {
         : '<button class="btn primary grow" data-act="nextQ">次へ →</button>');
   }
 
+  var qidLabel = qIdForExam(ex, q);
   app.innerHTML =
-    '<div class="card" style="margin-top:6px">' +
+    '<div class="card exam-card" style="margin-top:6px">' +
     '<div class="qmeta"><span>問題 ' + (ex.idx + 1) + ' / ' + total + ' ・ 回答済 ' + answered + (ex.study ? ' ・ 📖学習' : '') + '</span>' +
     '<span id="timer">⏱ 0:00</span></div>' +
     '<div class="bar"><i style="width:' + pct(ex.idx + 1, total) + '%"></i></div>' +
     '<div class="row wrap" style="margin-top:10px;gap:6px">' +
+    '<span class="pill id">🆔 ' + esc(qidLabel) + '</span>' +
     '<span class="pill g">' + esc(q.genre) + '</span>' +
     '<span class="pill' + (q.importance === '高' ? ' hi' : '') + '">重要度 ' + esc(q.importance) + '</span>' +
+    (ex.hw && q._why ? '<span class="pill hi">📅 ' + esc(q._why) + '</span>' : '') +
     (multi ? '<span class="pill">複数選択可</span>' : '') +
     '<span class="grow"></span>' +
-    '<button class="btn ghost sm" data-act="bmEx">' + (BM.has(ex.deckId, q.num) ? '★' : '☆') + '</button>' +
+    '<button class="btn ghost sm" data-act="bmEx">' + (BM.has(qDeckId(q), q.num) ? '★' : '☆') + '</button>' +
     '<button class="btn ghost sm" data-act="flag">' + (ex.flags[q.num] ? '🚩' : '🏳') + '</button>' +
     '</div>' +
-    '<div class="qtext">' + esc(q.text) + '</div>' +
-    ch +
-    (revealed ? explBlock(q, effExpl(ex.deckId, q)) : '') +
+    '<div class="exam-grid">' +
+    '<div class="exam-q"><div class="qtext">' + esc(q.text) + '</div></div>' +
+    '<div class="exam-choices"><div class="exam-col-label small muted">選択肢</div>' + ch + '</div>' +
+    '<div class="exam-expl">' +
+    confSectionHtml(qDeckId(q), q) +
+    (revealed ? ('<div class="exam-col-label small muted">解答・解説</div>' + explBlock(q, effExpl(qDeckId(q), q))) : '') +
+    '</div>' +
+    '</div>' +
     '</div>' +
     '<div class="card"><div class="navgrid">' + navGridHtml() + '</div></div>' +
     '<div class="sticky-bottom">' + bottom + '</div>' +
@@ -1067,6 +1698,7 @@ function renderExamRun() {
   startTimer();
   saveActiveExam();
   decorateGlossary();
+  bindConfInputs(qDeckId(q));
 }
 function navGridHtml() {
   var ex = state.exam, h = '';
@@ -1108,10 +1740,19 @@ function revealAnswer() {
   var ex = state.exam, q = ex.qs[ex.idx];
   if (!(ex.answers[q.num] && ex.answers[q.num].length)) return;
   ex.revealed[q.num] = true;
+  if (ex.hw) {   // 宿題/見直しは「答え合わせ」した時点で1問ずつ即採点・即同期（途中離脱でも残る）
+    ex.graded = ex.graded || {};
+    if (!ex.graded[q.num]) {
+      SRS.grade(q._deck || ex.deckId, q.num, eqSet(ex.answers[q.num], q.correct));
+      ex.graded[q.num] = true;
+      HwStreak.bump();
+    }
+  }
   renderExamRun();
 }
 function finishExam() {
   var ex = state.exam;
+  if (ex.hw) return finishHomework();   // 今日の宿題は別集計（SRS更新・成績には混ぜない）
   var unanswered = ex.qs.filter(function (q) { return !(ex.answers[q.num] && ex.answers[q.num].length); }).length;
   if (unanswered > 0 && !confirm('未回答が ' + unanswered + ' 問あります。採点しますか？（未回答は不正解扱い）')) return;
   if (_timer) clearInterval(_timer);
@@ -1174,7 +1815,7 @@ function renderExamResult(a) {
   wrong.forEach(function (it) {
     var q = qmap[it.num];
     wrows += '<details class="moredetail" style="margin:6px 0">' +
-      '<summary>Q' + it.num + ' <span class="small muted">' + esc(it.genre) + '</span></summary>' +
+      '<summary>' + esc(qId(a.deckName || a.deckId, it.num)) + ' <span class="small muted">' + esc(it.genre) + '</span></summary>' +
       '<div style="padding:0 12px 12px">' +
       (q ? ('<div class="qtext" style="font-size:14px">' + esc(q.text) + '</div>' + choicesView(q, it.selected) + explBlock(q) +
         '<div style="margin-top:10px"><button class="btn sm" data-act="bmRes" data-num="' + it.num + '">' + (BM.has(a.deckId, it.num) ? '★ ブックマーク済' : '☆ ブックマーク') + '</button></div>')
@@ -1205,6 +1846,8 @@ function renderExamResult(a) {
 /* ---------- 解説モード ---------- */
 function renderReviewRun(arg) {
   var deckId = arg.deckId, d = Store.getDeck(deckId); if (!d) return show('review');
+  var backTo = ActiveDeck.deckId() === deckId ? 'home' : 'review';
+  var backLabel = ActiveDeck.deckId() === deckId ? '← ホーム' : '← デッキ';
   if (!state.review || state.review.deckId !== deckId) {
     state.review = { deckId: deckId, filter: 'all', genre: '', idx: 0 };
   }
@@ -1229,7 +1872,7 @@ function renderReviewRun(arg) {
     });
   }
   if (!list.length) {
-    app.innerHTML = '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="review">← デッキ</button>' +
+    app.innerHTML = '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="' + backTo + '">' + backLabel + '</button>' +
       '<span class="grow"></span><span class="small muted">' + esc(deckLabel(d.name)) + '</span></div>' +
       reviewToolbar(rv, d) + '<div class="empty">該当する問題がありません</div></div>';
     bindReviewToolbar();
@@ -1244,7 +1887,7 @@ function renderReviewRun(arg) {
 
   app.innerHTML =
     '<div class="card" style="margin-top:6px">' +
-    '<div class="row"><button class="btn ghost sm" data-act="back" data-to="review">← デッキ</button>' +
+    '<div class="row"><button class="btn ghost sm" data-act="back" data-to="' + backTo + '">' + backLabel + '</button>' +
     '<span class="grow"></span><span class="small muted">' + esc(deckLabel(d.name)) + '</span></div>' +
     reviewToolbar(rv, d) + '</div>' +
     '<div class="card">' +
@@ -1260,6 +1903,8 @@ function renderReviewRun(arg) {
     '<div class="qtext">' + esc(q.text) + '</div>' +
     choicesView(q, mine ? mine.selected : []) +
     (mine ? '<div class="small ' + (mine.isCorrect ? 'okc' : 'ngc') + '" style="margin-top:6px">前回のあなた: ' + (mine.isCorrect ? '正解 ✓' : '不正解 ✕') + '</div>' : '') +
+    (q.srcVerdict ? '<div class="small ' + (q.srcVerdict === '○' ? 'okc' : 'ngc') + '" style="margin-top:4px">本番(模試): ' + (q.srcVerdict === '○' ? '正解 ✓' : '不正解 ✕') + (q.srcAnswer && q.srcAnswer.length ? '（あなたの回答 ' + q.srcAnswer.join(',') + '）' : '') + '</div>' : '') +
+    confSectionHtml(deckId, q) +
     (rv.editing ? explEditor(deckId, q, gtext) : explBlock(q, gtext)) +
     (added && !rv.editing ? '<div class="small muted" style="margin-top:4px">※この解説はアプリで追記したものです</div>' : '') +
     '</div>' +
@@ -1269,6 +1914,7 @@ function renderReviewRun(arg) {
     '</div>';
   state.reviewList = list;
   bindReviewToolbar();
+  bindConfInputs(deckId);
 }
 function reviewToolbar(rv, d) {
   var genres = deckGenres(d);
@@ -1319,12 +1965,15 @@ function buildAddedExplMd(deckId) {
 /* ---------- 弱点（統計） ---------- */
 function renderStatsDeck(deckId) {
   var d = Store.getDeck(deckId); if (!d) return show('stats');
+  var backTo = ActiveDeck.deckId() === deckId ? 'home' : 'stats';
+  var backLabel = ActiveDeck.deckId() === deckId ? '← ホーム' : '← 戻る';
   var at = Store.attempts(deckId);
   if (!at.length && PStats.count(deckId) === 0) {
-    app.innerHTML = '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="stats">← 戻る</button>' +
+    app.innerHTML = '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="' + backTo + '">' + backLabel + '</button>' +
       '<h3 class="grow" style="margin:0 0 0 8px">' + esc(deckLabel(d.name)) + '</h3></div>' +
       '<div class="empty">まだ記録がありません。<br>試験モードや練習モードをやると、ここに弱点が出ます。<br>' +
-      '<button class="btn primary" data-act="startExam" data-id="' + esc(deckId) + '" style="margin-top:12px">📝 試験を始める</button></div></div>';
+      '<button class="btn primary" data-act="startExam" data-id="' + esc(deckId) + '" style="margin-top:12px">📝 試験を始める</button></div></div>' +
+      confCardHtml(deckId);
     return;
   }
   var gs = genreStats(deckId), qs = qStats(deckId);
@@ -1346,8 +1995,10 @@ function renderStatsDeck(deckId) {
   gkeys.forEach(function (k) {
     var g = gs[k], gp = pct(g.correct, g.seen);
     var col = gp >= 72 ? 'var(--ok)' : gp >= 50 ? 'var(--warn)' : 'var(--bad)';
+    var need = Math.max(0, Math.ceil(g.seen * 0.72) - g.correct);
     grows += '<tr><td>' + esc(g.name) + '</td><td class="rt">' + g.correct + '/' + g.seen + '</td>' +
-      '<td style="width:40%"><div class="meter"><i style="width:' + gp + '%;background:' + col + '"></i></div></td><td class="rt">' + gp + '%</td></tr>';
+      '<td style="width:34%"><div class="meter"><i style="width:' + gp + '%;background:' + col + '"></i></div></td><td class="rt">' + gp + '%</td>' +
+      '<td class="rt">' + (need ? ('あと' + need + '問') : '達成') + '</td></tr>';
   });
 
   // よく間違える問題（正答率低い順）
@@ -1371,14 +2022,14 @@ function renderStatsDeck(deckId) {
   });
 
   app.innerHTML =
-    '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="stats">← 戻る</button>' +
+    '<div class="card"><div class="row"><button class="btn ghost sm" data-act="back" data-to="' + backTo + '">' + backLabel + '</button>' +
     '<h3 class="grow" style="margin:0 0 0 8px">' + esc(deckLabel(d.name)) + ' 弱点</h3></div>' +
     '<div class="kpi" style="margin-top:10px">' +
     '<div class="b"><b>' + at.length + '</b><span class="small muted">受験回数</span></div>' +
     '<div class="b"><b>' + lastP + '%</b><span class="small muted">直近</span></div>' +
     '<div class="b"><b>' + best + '%</b><span class="small muted">ベスト</span></div></div></div>' +
     trendCard +
-    '<div class="card"><h3>ジャンル別 正答率（弱い順）</h3><table class="tbl"><tr><th>ジャンル</th><th class="rt">正答</th><th></th><th class="rt">率</th></tr>' + grows + '</table></div>' +
+    '<div class="card"><h3>ジャンル別 正答率（弱い順）</h3><p class="small muted">目標72%までに必要な追加正解数の目安も表示します。</p><table class="tbl"><tr><th>ジャンル</th><th class="rt">正答</th><th></th><th class="rt">率</th><th class="rt">72%まで</th></tr>' + grows + '</table></div>' +
     '<div class="card"><h3>よく間違える問題</h3>' + (mrows || '<div class="empty small">なし</div>') + '</div>' +
     '<div class="card"><h3>受験履歴</h3><table class="tbl"><tr><th>日時</th><th class="rt">率</th><th class="rt">正解</th><th class="rt">時間</th></tr>' + hrows + '</table></div>' +
     '<div class="card"><h3>🤖 弱点分析をAIに依頼</h3>' +
@@ -1387,7 +2038,8 @@ function renderStatsDeck(deckId) {
     '<button class="btn grow" data-act="saveWeak" data-id="' + esc(deckId) + '">💾 .md保存</button></div></div>' +
     '<div class="card"><h3>✏️ 追記した解説</h3>' +
     '<p class="small muted">解説モードで追記/編集した解説：<b>' + ExplStore.count(deckId) + '問</b>。<code class="k">_Gemini解説.md</code>として書き出すと、他端末への引継ぎやバックアップに使えます。</p>' +
-    '<button class="btn block" data-act="exportAddedExpl" data-id="' + esc(deckId) + '">📝 追記解説を書き出し（_Gemini解説.md）</button></div>';
+    '<button class="btn block" data-act="exportAddedExpl" data-id="' + esc(deckId) + '">📝 追記解説を書き出し（_Gemini解説.md）</button></div>' +
+    confCardHtml(deckId);
 }
 
 /* ---------- 弱点エクスポート ---------- */
@@ -1429,6 +2081,71 @@ function buildWeaknessMd(deckId) {
   lines.push('> このデータを見て、根深い弱点・優先して復習すべきジャンル・次の学習プランを分析してください。');
   return lines.join('\n');
 }
+/* 自信度・メモ → 教師プロンプト用テキスト（思い込みトリアージ付き） */
+function buildTutorMemoMd(deckId) {
+  var d = Store.getDeck(deckId) || { name: '', questions: [] };
+  var cm = CONF.all(deckId);
+  var qByNum = {}; d.questions.forEach(function (q) { qByNum[q.num] = q; });
+  var lastA = lastAnswerMap(deckId);
+  function verdict(n) {
+    var q = qByNum[n] || {};
+    if (q.srcVerdict) return q.srcVerdict;          // 本番(模試CSV)優先
+    if (lastA[n]) return lastA[n].isCorrect ? '○' : '×'; // なければアプリ内受験
+    return '';
+  }
+  var nums = Object.keys(cm).map(Number).sort(function (a, b) { return a - b; });
+  function line(n) {
+    var q = qByNum[n] || {};
+    return '- Q' + n + '（自信' + (cm[n].c || '?') + '・' + (q.genre || '?') + '）正解テーマ: ' + (q.correctTheme || '') +
+      (cm[n].m ? ' ｜メモ: ' + cm[n].m : '');
+  }
+  var omoi = [], magu = [], mada = [];
+  nums.forEach(function (n) {
+    var c = cm[n].c || '', v = verdict(n);
+    if (v === '×' && (c === '◎' || c === '○')) omoi.push(n);
+    else if (v === '○' && (c === '×' || c === '△')) magu.push(n);
+    else if (v === '×') mada.push(n);
+  });
+  var L = ['# ' + d.name + ' 自信度・思ったことメモ（教師プロンプト用）', '',
+    '> 書き出し ' + fmtDate(Date.now()) + '／記録 ' + nums.length + '問。自信度 ◎=確信 ○=たぶん △=勘 ×=わからない。正誤は本番(模試CSV)優先。', '',
+    '## 🚨 最優先：思い込み（◎○なのに不正解）' + omoi.length + '問'];
+  L = L.concat(omoi.length ? omoi.map(line) : ['- （なし）']);
+  L.push('', '## ⚠️ まぐれ（×/△なのに正解＝実力外）' + magu.length + '問');
+  L = L.concat(magu.length ? magu.map(line) : ['- （なし）']);
+  L.push('', '## 未学習（△×で不正解）' + mada.length + '問');
+  L = L.concat(mada.length ? mada.map(line) : ['- （なし）']);
+  L.push('', '## 全記録', '| Q | 正誤 | 自信度 | ジャンル | メモ |', '|---|---|---|---|---|');
+  nums.forEach(function (n) {
+    var q = qByNum[n] || {};
+    L.push('| Q' + n + ' | ' + (verdict(n) || '-') + ' | ' + (cm[n].c || '-') + ' | ' + (q.genre || '') + ' | ' + (cm[n].m || '').replace(/\|/g, '/') + ' |');
+  });
+  L.push('', '> ◎○で外した問題を最優先で再出題し、「なぜそう思ったか→正しい型」を言語化させてください。');
+  return L.join('\n');
+}
+/* 「番号 自信度 メモ」形式テキストを取り込む（手書きtxt / アプリ書き出し両対応） */
+function importConfText(deckId, text) {
+  var n = 0;
+  String(text || '').split(/\r?\n/).forEach(function (ln) {
+    var m = ln.match(/^\s*(\d{1,3})[\s.:、，]+([◎○〇△×✕xXｘ])\s*(.*)$/);
+    if (!m) return;
+    CONF.setConf(deckId, parseInt(m[1], 10), normConf(m[2]));
+    var memo = (m[3] || '').trim();
+    if (memo) CONF.setMemo(deckId, parseInt(m[1], 10), memo);
+    n++;
+  });
+  return n;
+}
+/* 自信度・メモ カード（弱点画面で受験履歴の有無に関わらず表示） */
+function confCardHtml(deckId) {
+  return '<div class="card"><h3>🎓 自信度・メモ（教師プロンプト用）</h3>' +
+    '<p class="small muted">各問の自信度（◎○△×）＋メモ＋本番(模試)の正誤を書き出し。<b>◎○なのに不正解＝思い込み</b>を最優先表示。家庭教師プロンプトに貼れます。記録: <b>' + CONF.count(deckId) + '問</b></p>' +
+    '<div class="btnrow"><button class="btn primary grow" data-act="confExportCopy" data-id="' + esc(deckId) + '">📋 コピー</button>' +
+    '<button class="btn grow" data-act="confExportSave" data-id="' + esc(deckId) + '">💾 保存(_自信度メモ.md)</button></div>' +
+    '<details class="moredetail" style="margin-top:10px"><summary>📥 自信度メモを貼り付けて取込</summary>' +
+    '<div style="padding:0 12px 12px"><p class="small muted">1行に「番号 自信度(◎○△×) メモ」。例 <code class="k">20 △ ACは違う</code></p>' +
+    '<textarea id="confImportTA" class="expl-edit" style="min-height:120px" placeholder="1 ○&#10;20 △ ACは違うと思う&#10;43 × 運"></textarea>' +
+    '<button class="btn primary block sm" data-act="confImport" data-id="' + esc(deckId) + '" style="margin-top:8px">取込む</button></div></details></div>';
+}
 function saveTextFile(filename, text) {
   var blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
   var a = document.createElement('a');
@@ -1454,6 +2171,7 @@ function fallbackCopy(text) {
 var handlers = {
   goImport: function () { show('import'); },
   home: function () { show('home'); },
+  openSchedule: function () { show('schedule'); },
   back: function (t) { show(t.dataset.to); },
   gloss: function (t) { showGloss(t.dataset.term); },
   glossClose: function () { var s = document.getElementById('glossSheet'); if (s) s.remove(); },
@@ -1484,7 +2202,7 @@ var handlers = {
   // exam run
   pick: function (t) { pickChoice(parseInt(t.dataset.n, 10)); },
   reveal: function () { revealAnswer(); },
-  bmEx: function () { var ex = state.exam, q = ex.qs[ex.idx]; BM.toggle(ex.deckId, q.num); renderExamRun(); },
+  bmEx: function () { var ex = state.exam, q = ex.qs[ex.idx]; BM.toggle(qDeckId(q), q.num); renderExamRun(); },
   flag: function () { var ex = state.exam, q = ex.qs[ex.idx]; ex.flags[q.num] = !ex.flags[q.num]; renderExamRun(); },
   nextQ: function () { if (state.exam.idx < state.exam.qs.length - 1) { state.exam.idx++; renderExamRun(); } },
   prevQ: function () { if (state.exam.idx > 0) { state.exam.idx--; renderExamRun(); } },
@@ -1547,7 +2265,71 @@ var handlers = {
   exportAddedExpl: function (t) {
     var id = t.dataset.id; if (ExplStore.count(id) === 0) { toast('追記した解説がありません'); return; }
     var d = Store.getDeck(id); saveTextFile(d.name + '_Gemini解説_追記.md', buildAddedExplMd(id)); toast('書き出しました');
-  }
+  },
+  // 自信度＋メモ
+  confSet: function (t) {
+    var num = parseInt(t.dataset.num, 10), c = t.dataset.c;
+    var inExam = state.view === 'examRun';
+    var deckId;
+    if (inExam) { var cq = state.exam.qs[state.exam.idx]; deckId = qDeckId(cq); }
+    else deckId = state.review && state.review.deckId;
+    if (!deckId) return;
+    var ta = document.getElementById('confMemo-' + num); // 再描画前にメモを退避保存
+    if (ta) CONF.setMemo(deckId, num, ta.value);
+    CONF.setConf(deckId, num, c);
+    if (inExam) renderExamRun();
+    else { state.review.editing = false; show('reviewRun', { deckId: deckId }); }
+  },
+  confExportCopy: function (t) { copyText(buildTutorMemoMd(t.dataset.id)); },
+  confExportSave: function (t) { var d = Store.getDeck(t.dataset.id); saveTextFile(d.name + '_自信度メモ.md', buildTutorMemoMd(t.dataset.id)); toast('保存しました'); },
+  confImport: function (t) {
+    var ta = $('#confImportTA'); if (!ta) return;
+    var n = importConfText(t.dataset.id, ta.value);
+    toast(n ? (n + '問の自信度を取込みました') : '形式に合う行がありません');
+    show('statsDeck', t.dataset.id);
+  },
+  // サーバー（ログイン・同期）／今日の宿題
+  doLogin: function () {
+    var pw = $('#loginPw'); if (!pw) return; var msg = $('#loginMsg'); if (msg) msg.textContent = '確認中…';
+    API.login(pw.value).then(function () { return Sync.pullInto(); })
+      .then(function () { Sync.flushOutbox(); toast('ログインしました'); show('home'); })
+      .catch(function (e) { if (msg) msg.textContent = (e && e.code === 401) ? 'パスワードが違います' : '接続できません'; });
+  },
+  logout: function () { if (!confirm('ログアウトしますか？')) return; API.setToken(''); show('login'); },
+  syncNow: function () {
+    if (!Sync.online()) { toast('サーバー未接続です'); return; }
+    toast('同期中…'); Sync.flushOutbox().then(function () { return Sync.pullInto(); })
+      .then(function () { toast('同期しました'); show('home'); }).catch(function () { toast('同期に失敗しました'); });
+  },
+  startHw: function () {
+    if (!Sync.online()) { toast('サーバーに接続してください（ログイン）'); return; }
+    toast('今日の宿題を準備中…');
+    API.homework(HW_N, ActiveDeck.deckId()).then(function (hw) {
+      if (!hw.items || !hw.items.length) { toast('対象なし。まず模試CSVを取込/受験してください'); return; }
+      state.lastHw = hw; show('homework');
+    }).catch(function () { toast('宿題の取得に失敗しました'); });
+  },
+  hwAll: function () {
+    var hw = state.lastHw; if (!hw) return;
+    var today = ymdLocal(new Date());
+    var todo = (hw.items || []).filter(function (it) { var s = SRS.get(it.deckId, it.num); return !(s && s.lastDay === today); });
+    if (!todo.length) { toast('今日の宿題は完了です'); return; }
+    startHomeworkSession(hw, todo);
+  },
+  hwItem: function (t) {
+    var hw = state.lastHw; if (!hw) return;
+    var it = (hw.items || [])[parseInt(t.dataset.i, 10)];
+    if (it) startHomeworkSession(hw, [it]);
+  },
+  hwReview: function () {
+    var p = reviewPool(ActiveDeck.deckId()).filter(function (x) { return !x.mastered && !x.doneToday; });
+    p.sort(function (a, b) { return (a.omoi ? 0 : 1) - (b.omoi ? 0 : 1) || a.box - b.box; });
+    var todo = p.slice(0, 20);
+    if (!todo.length) { toast('今日の見直しは完了！'); return; }
+    startReviewSession(todo);
+  },
+  hwTutorCopy: function () { copyText(buildTodayTutorPrompt(state.lastHw || { items: [] })); },
+  hwPrint: function () { printHomework(); }
 };
 function doRestore(fileList) {
   var f = (fileList || [])[0]; if (!f) return;
@@ -1661,6 +2443,7 @@ window.addEventListener('beforeinstallprompt', function (e) {
 
 /* ---------- 起動 ---------- */
 Settings.applyFont();
-show('home');
+initDeckChip();
+Sync.boot();   // サーバーに繋がればログイン/同期、無ければ従来どおりローカル動作
 
 })();
