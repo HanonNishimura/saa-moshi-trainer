@@ -214,6 +214,10 @@ textarea.conf-memo{width:100%;margin-top:8px;background:var(--bg);color:var(--in
 .hw-item.done{opacity:.6}
 .hw-item.done .hw-body b{text-decoration:line-through}
 
+/* ⚡ サクッと集中カード（短時間・最重要） */
+.focus-card{border-color:#a16207;background:linear-gradient(180deg,#2a2009,#1b2336)}
+.focus-card .btn.primary{background:linear-gradient(180deg,#f59e0b,#d97706);border-color:#b45309;color:#1a1206}
+
 /* 問題ID pill（プリント・写真照合・AI管理用） */
 .pill.id{border-color:#7c3aed;color:#ddd6fe;background:#1e1635;font-weight:700;letter-spacing:.02em}
 

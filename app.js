@@ -421,6 +421,26 @@ function homeHwCard() {
     '<div class="hw-total" style="margin:6px 0"><span class="hw-total-num">1日 全 ' + HW_N + ' 問</span></div>' + rl +
     '<button class="btn primary block" data-act="startHw">▶ 今日の宿題（TODO）を開く</button></div>';
 }
+/* ⚡ サクッと集中カード（最重要から数問だけ・短時間）。誤答プールがあるときだけ表示 */
+function quickFocusCard() {
+  var st = reviewStats(ActiveDeck.deckId());
+  if (!st.total) return '';
+  var remain = st.total - st.mastered;
+  if (remain <= 0) return '';
+  var scope = ActiveDeck.deckId() ? ActiveDeck.label() : '全デッキ';
+  return '<div class="card focus-card">' +
+    '<div class="row"><b class="grow" style="font-size:18px">⚡ サクッと集中</b>' +
+    '<span class="small muted">' + esc(scope) + '</span></div>' +
+    '<p class="small" style="margin:6px 0 8px">集中が切れてもOK。<b>最重要（思い込み）から数問だけ</b>。1問ずつ即採点＋解説で、すぐ終わる。' +
+    (st.omoiRemain ? '<br>🔴 思い込み残 <b>' + st.omoiRemain + '</b> 問 ／ 未克服 ' + remain + ' 問' : '<br>未克服 ' + remain + ' 問') + '</p>' +
+    '<div class="btnrow">' +
+    '<button class="btn primary grow" data-act="quickFocus" data-n="3">最重要 3問</button>' +
+    '<button class="btn primary grow" data-act="quickFocus" data-n="5">最重要 5問</button>' +
+    '<button class="btn grow" data-act="quickFocus" data-n="10">10問</button>' +
+    '</div>' +
+    '<div class="small muted" style="margin-top:6px">目安: 3問≈5分・5問≈8分・10問≈15分</div>' +
+    '</div>';
+}
 var HwStreak = {
   get: function () { return LS.get('saa.hwStreak', { last: '', n: 0 }); },
   bump: function () {
@@ -511,6 +531,25 @@ function startReviewSession(items) {
   });
   if (!qs.length) { toast('対象の問題が見つかりません'); return; }
   state.exam = { deckId: items[0].deckId, deckName: '誤答の見直し', qs: qs, idx: 0, answers: {}, flags: {}, startedAt: Date.now(), study: true, revealed: {}, hw: true };
+  saveActiveExam(); show('examRun');
+}
+/* ⚡ サクッと集中：最重要(思い込み優先)からN問だけ。1問ずつ即採点＋即解説の短時間セッション */
+function startQuickFocus(n) {
+  var pool = reviewPool(ActiveDeck.deckId());
+  var avail = pool.filter(function (x) { return !x.mastered && !x.doneToday; });
+  if (!avail.length) avail = pool.filter(function (x) { return !x.doneToday; });   // 今日分が尽きたら克服済みも復習に回す
+  if (!avail.length) avail = pool.slice();                                          // それも無ければ全プールから
+  if (!avail.length) { toast('対象の問題がありません。まず誤答（模試結果）を取込んでください'); return; }
+  avail.sort(function (a, b) { return (a.omoi ? 0 : 1) - (b.omoi ? 0 : 1) || a.box - b.box; });  // 思い込み→box小（=苦手）優先
+  var items = avail.slice(0, n);
+  var qs = [];
+  items.forEach(function (it) {
+    var d = Store.getDeck(it.deckId); if (!d) return;
+    var q = (d.questions || []).find(function (x) { return x.num === it.num; });
+    if (q) { var qq = Object.assign({}, q); qq._deck = it.deckId; qq._why = it.why; qs.push(qq); }
+  });
+  if (!qs.length) { toast('対象の問題が見つかりません'); return; }
+  state.exam = { deckId: items[0].deckId, deckName: '⚡ 最重要' + qs.length + '問', qs: qs, idx: 0, answers: {}, flags: {}, startedAt: Date.now(), study: true, revealed: {}, hw: true };
   saveActiveExam(); show('examRun');
 }
 function renderHomework() {
@@ -1178,6 +1217,7 @@ function showGloss(term) {
 function renderHome() {
   var decks = Store.decks();
   var html = activeDeckCard(decks);
+  html += quickFocusCard();   // ⚡ サクッと集中（最重要から数問だけ）
   html += scheduleHomeCard();
   if (API.available) html += homeHwCard();   // サーバー接続時のみ「今日の宿題」
   // 中断した試験の再開バナー
@@ -2329,7 +2369,8 @@ var handlers = {
     startReviewSession(todo);
   },
   hwTutorCopy: function () { copyText(buildTodayTutorPrompt(state.lastHw || { items: [] })); },
-  hwPrint: function () { printHomework(); }
+  hwPrint: function () { printHomework(); },
+  quickFocus: function (t) { startQuickFocus(parseInt(t.dataset.n, 10) || 5); }
 };
 function doRestore(fileList) {
   var f = (fileList || [])[0]; if (!f) return;
