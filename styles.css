@@ -325,3 +325,34 @@ textarea.conf-memo{width:100%;margin-top:8px;background:var(--bg);color:var(--in
     margin:0 0 16px; display:inline-block; width:100%;
   }
 }
+
+/* ===== PC UI フェーズD：仕上げ（>=1000px。スマホは不変） ===== */
+/* キーボード操作ヒントはPCのみ表示（スマホでは常に非表示） */
+.kbd-hint{ display:none; }
+@media (min-width:1000px){
+  /* 弱点詳細(statsDeck)もホーム同様に2カラム化 */
+  body[data-view="statsDeck"] .wrap{ max-width:1120px; }
+  body[data-view="statsDeck"] #app{ column-count:2; column-gap:18px; }
+  body[data-view="statsDeck"] #app > .card{
+    break-inside:avoid; -webkit-column-break-inside:avoid;
+    margin:0 0 16px; display:inline-block; width:100%;
+  }
+  /* キーボードヒント */
+  .kbd-hint{
+    display:block; margin:10px 0 0; padding:7px 12px;
+    background:var(--bg2); border:1px solid var(--line); border-radius:10px;
+    color:var(--muted); font-size:12px;
+  }
+  .kbd-hint kbd{
+    display:inline-block; padding:1px 6px; margin:0 2px; border-radius:5px;
+    border:1px solid var(--line); background:var(--card2); color:var(--ink);
+    font-size:11px; font-family:inherit;
+  }
+  /* サイドナビ上部にブランド表示（DOMは触らずCSSで付与） */
+  nav.tabbar::before{
+    content:"SAA 模試"; display:block;
+    padding:6px 14px 12px; margin-bottom:4px;
+    font-weight:800; font-size:15px; color:var(--brand);
+    border-bottom:1px solid var(--line);
+  }
+}

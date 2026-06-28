@@ -743,7 +743,8 @@ function renderFlash() {
     '<b class="grow">🎮 ながら復習</b>' +
     '<span class="small muted">めくった ' + fl.seen + ' 枚</span>' +
     ttsBtn +
-    '<button class="btn ghost sm" data-act="home" style="margin-left:6px">終了</button></div>';
+    '<button class="btn ghost sm" data-act="home" style="margin-left:6px">終了</button></div>' +
+    '<div class="kbd-hint">⌨ <kbd>Enter</kbd>／<kbd>Space</kbd> 答えを見る　<kbd>1</kbd> わかった　<kbd>2</kbd> あやしい　<kbd>Enter</kbd> 次へ</div>';
   var pills =
     '<div class="row wrap" style="gap:6px;margin:8px 0 4px">' +
     '<span class="pill id">🆔 ' + esc(idl) + '</span>' +
@@ -1969,6 +1970,7 @@ function renderExamRun() {
     '</div>' +
     '</div>' +
     '</div>' +
+    '<div class="kbd-hint">⌨ <kbd>1</kbd>〜<kbd>9</kbd> 選択　<kbd>←</kbd><kbd>→</kbd> 前後の問題　<kbd>Enter</kbd> 次へ／採点</div>' +
     '<div class="card"><div class="navgrid">' + navGridHtml() + '</div></div>' +
     '<div class="sticky-bottom">' + bottom + '</div>' +
     '<div class="spacer"></div>' +
