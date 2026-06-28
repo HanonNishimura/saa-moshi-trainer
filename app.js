@@ -2658,11 +2658,22 @@ document.addEventListener('keydown', function (e) {
     else if (e.key === 'ArrowRight' || e.key === 'Enter') {
       if (ex.study && !ex.revealed[q.num]) { revealAnswer(); }
       else if (ex.idx < ex.qs.length - 1) { ex.idx++; renderExamRun(); }
+      else { var fb = app.querySelector('[data-act="finishExam"]'); if (fb) fb.click(); }   // 最終問題はEnterで採点/結果へ
       e.preventDefault();
     }
   } else if (state.view === 'reviewRun' && state.review) {
     if (e.key === 'ArrowLeft') { if (state.review.idx > 0) { state.review.idx--; show('reviewRun', { deckId: state.review.deckId }); } }
     else if (e.key === 'ArrowRight') { if (state.review.idx < (state.reviewList || []).length - 1) { state.review.idx++; show('reviewRun', { deckId: state.review.deckId }); } }
+  } else if (state.view === 'flash' && state.flash) {
+    // ながら復習：未公開はEnter/Space/→で答え表示、公開後は1=わかった/2=あやしい/Enter等で次へ
+    var clickFlash = function (act) { var b = app.querySelector('[data-act="' + act + '"]'); if (b) { b.click(); return true; } return false; };
+    if (!state.flash.revealed) {
+      if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowRight' || e.key === 'ArrowDown') { clickFlash('flashReveal'); e.preventDefault(); }
+    } else {
+      if (e.key === '1') { clickFlash('flashGood'); e.preventDefault(); }
+      else if (e.key === '2') { clickFlash('flashBad'); e.preventDefault(); }
+      else if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowRight') { clickFlash('flashNext'); e.preventDefault(); }
+    }
   }
 });
 
